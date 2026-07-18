@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>irodori voice studio</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/reader.css">
+  <link rel="stylesheet" href="/chat.css">
+  <link rel="stylesheet" href="/quick-voice.css">
+</head>
+<body>
+<main class="shell">
+  <header class="hero">
+    <div><p class="eyebrow">LOCAL STORY VOICE WORKSPACE</p><h1>irodori<br><span>voice studio</span></h1><p class="subtitle">長文、話者切替、自然な分割をひとつの画面で。</p></div>
+    <div class="status"><i id="statusDot"></i><div><strong id="statusText">確認中</strong><small id="statusDetail">audio.cppへ接続しています</small></div></div>
+  </header>
+
+  <nav class="tabs" aria-label="設定画面">
+    <button class="active" data-tab="generate">音声生成</button>
+    <button data-tab="chat">会話</button>
+    <button data-tab="story">話者切替</button>
+    <button data-tab="split">分割</button>
+    <button data-tab="ignore">読まない文章</button>
+    <button data-tab="system">システム</button>
+  </nav>
+
+  <section id="tab-generate" class="tab active">
+    <div class="workspace">
+      <form id="generateForm" class="panel composer">
+        <div class="section-title"><span>01</span><h2>原稿</h2><small class="first-run-note">※初回生成時は時間がかかる場合があります</small></div>
+        <textarea id="text" rows="12" maxlength="20000" placeholder="読み上げる文章を入力してください。例：【佐藤】こんにちは。【花子】おはよう。"></textarea>
+        <div class="row-note"><span id="charCount">0</span> / 20000文字</div>
+        <div class="quick-voice"><div><strong>今回使う参照WAV</strong><small>話者指定がない部分へ、選択解除するまでこの音声を使用します。</small></div><label class="quick-file">WAVを参照<input id="quickVoiceFile" type="file" accept=".wav,audio/wav"><span id="quickVoiceName">選択されていません</span></label><button id="clearQuickVoice" class="quick-clear" type="button" disabled>選択解除</button><label class="quick-register"><input id="quickVoiceRegister" type="checkbox"> 話者切替でも使えるように登録する</label></div>
+        <div class="actions"><button id="planButton" class="secondary" type="button">分割を確認</button><button id="generateButton" class="primary" type="submit">音声を生成</button></div>
+        <p id="message" class="message"></p>
+      </form>
+      <div class="side">
+        <section class="panel result"><div class="section-title"><span>02</span><h2>生成結果</h2></div><div id="emptyResult" class="empty">∿<small>生成した音声がここに表示されます</small></div><div id="result" class="hidden"><div class="metrics"><div><small>生成時間</small><strong id="metricTime">—</strong></div><div><small>チャンク</small><strong id="metricChunks">—</strong></div><div><small>実際の使用音声</small><strong id="metricVoices">—</strong></div></div><audio id="player" controls></audio><a id="download" download>WAVを保存</a></div></section>
+        <section class="panel preview"><div class="section-title compact"><span>PLAN</span><h2>分割プレビュー</h2></div><div id="plan" class="muted">「分割を確認」で生成前に確認できます。</div></section>
+      </div>
+    </div>
+    <section class="panel history"><div class="section-title"><span>03</span><h2>最近の生成</h2></div><div id="history" class="history-list"></div></section>
+  </section>
+
+  <section id="tab-story" class="tab"><div class="panel settings-panel"><div class="section-title"><span>VOICE</span><h2>話者切替</h2></div><label class="switch"><input id="reader_extraction_enabled" type="checkbox"><span></span><div><strong>原稿の文字を検出して音声を切り替える</strong><small>登録した文字を見つけた位置から、次の登録文字まで指定WAVで読みます。</small></div></label><div class="example-card"><strong>文章での使用例</strong><p><code>【佐藤】こんにちは。【花子】おはよう。</code></p><p><code>【佐藤】 → 佐藤.wav</code> と登録すると、【佐藤】を検出した位置から佐藤の音声になります。検出文字は自由記入で、<code>＜佐藤＞</code> や <code>@@佐藤</code> でも構いません。読みやすいため <code>【佐藤】</code> 形式を推奨します。</p></div><hr class="section-line"><label class="switch"><input id="speaker_switch_enabled" type="checkbox"><span></span><div><strong>話者ごとにWAVを切り替える</strong><small>下の「明示的な対応」に検出文字とWAVを何件でも登録できます。</small></div></label><label>登録文字がない部分のデフォルトWAV<select id="default_voice"><option value="">参照音声なし</option></select></label><div class="multi-upload"><div><strong>複数人のWAVをまとめて登録</strong><p>佐藤.wav、花子.wav、太郎.wavのように、何人分でも追加できます。</p></div><label class="file-drop">複数のWAVを選択<input id="voiceFiles" type="file" accept=".wav,audio/wav" multiple><span id="selectedVoiceCount">ファイル未選択</span></label><button id="uploadButton" class="secondary" type="button">選択したWAVをすべて登録</button></div><div class="registered-heading"><strong>登録済みWAV</strong><span id="voiceCount">0件</span></div><div id="voiceList" class="voice-list muted">登録済みWAVはありません。上のボタンから複数選択できます。</div><div class="explicit-map"><strong>検出文字とWAVの明示的な対応</strong><p>開始記号・終了記号の決まりはありません。原稿中で検出したい文字をそのまま入力します。</p><div class="map-row"><input id="aliasName" placeholder="検出文字（例：【佐藤】）"><select id="aliasVoice"><option value="">WAVを選択</option></select><button id="addAliasButton" class="secondary" type="button">対応を追加</button></div><div id="aliasList" class="alias-list muted">明示的な対応はありません。</div></div><button class="save primary" type="button">設定を保存</button></div></section>
+
+  <section id="tab-split" class="tab"><div class="panel settings-panel"><div class="section-title"><span>SPLIT</span><h2>自然な分割</h2></div><div class="form-grid"><label>最大文字数<input id="target_chars" type="number" min="20" max="250"></label><label>後方探索<input id="backtrack_chars" type="number" min="0" max="100"></label><label>文末の間 (ms)<input id="silence_sentence_ms" type="number" min="0" max="2000"></label><label>話者境界の間 (ms)<input id="silence_dialogue_ms" type="number" min="0" max="2000"></label><label>強制分割の間 (ms)<input id="silence_hard_ms" type="number" min="0" max="2000"></label><label>フェード (ms)<input id="fade_ms" type="number" min="0" max="100"></label></div><p class="hint">最大文字数を超えた場合、。 → ！？ → 、 → 強制の順で自然な位置を後方探索します。安全側の初期値は120文字です。</p><button class="save primary" type="button">設定を保存</button></div></section>
+
+  <section id="tab-ignore" class="tab"><div class="panel settings-panel"><div class="section-title"><span>FILTER</span><h2>読まない文章</h2></div><label>除外する文字列（1行に1つ）<textarea id="ignored_texts" rows="9" placeholder="※読み飛ばし"></textarea></label><p class="hint">登録した文字列だけを原稿から取り除き、その後の本文は読み上げます。</p><button class="save primary" type="button">設定を保存</button></div></section>
+
+  <section id="tab-system" class="tab"><div class="panel settings-panel"><div class="section-title"><span>SYSTEM</span><h2>audio.cpp接続</h2></div><div class="form-grid wide"><label>音声生成API<input id="audio_cpp_url"></label><label>ヘルスチェックURL<input id="audio_cpp_health_url"></label><label>モデル名<input id="model"></label><label>推論ステップ<input id="num_steps" type="number" min="1" max="200"></label><label>seed<input id="seed" type="number" min="0"></label></div><p class="hint">このUIはaudio.cppを交換可能なバックエンドとして利用します。設定はこのPCだけのsettings.local.jsonへ保存されます。</p><button class="save primary" type="button">設定を保存</button></div></section>
+  <section id="tab-chat" class="tab"><div class="chat-layout"><section class="panel chat-panel"><div class="section-title"><span>CHAT</span><h2>キャラクター会話</h2></div><div id="llmGuide" class="llm-guide"><strong>LLMを追加すると会話ができます</strong><p>OpenAI互換APIを起動して接続先を設定してください。現在の実機例は、接続名 <code>character-chat</code>（GGUFメタデータ: Gemma 4 E2B 4.6B）です。</p><p><strong>初回の返答生成は、モデルの読み込みにより時間がかかる場合があります。</strong> 生成後にLLMを終了する設定では、次回の会話でも再読み込み時間が発生します。</p></div><div class="chat-controls"><label>キャラクターJSON<select id="chatCharacter"></select></label><label>会話に使うWAV<select id="chatVoice"><option value="">キャラクター設定またはデフォルトWAV</option></select></label></div><div class="character-upload"><label>自分のキャラクターJSONを追加<input id="characterFile" type="file" accept=".json,application/json"></label><button id="uploadCharacter" class="secondary" type="button">JSONを読み込む</button><small>「リリー」は動作確認用のサンプルです。</small></div><div id="chatMessages" class="chat-messages"><div class="chat-empty">キャラクターを選び、メッセージを送ってください。</div></div><form id="chatForm" class="chat-compose"><textarea id="chatInput" rows="3" maxlength="4000" placeholder="メッセージを入力"></textarea><button id="chatSend" class="primary" type="submit">送信して音声生成</button></form><div class="chat-actions"><button id="resetChat" class="secondary" type="button">このキャラクターの会話履歴を消去</button></div></section><aside class="panel llm-example"><div class="section-title"><span>OPTIONAL</span><h2>LLM起動例</h2></div><p>llama.cppでOpenAI互換APIを起動する例です。モデルは同梱されません。</p><pre>llama-server -m models/your-model.gguf \
+  --host 127.0.0.1 --port 11438 \
+  -c 4096 -ngl 99</pre><dl><div><dt>Endpoint</dt><dd>127.0.0.1:11438</dd></div><div><dt>Model alias</dt><dd>character-chat</dd></div></dl><p class="hint">LLM未設定でも音声生成機能は利用できます。返答は現在の分割ルールを通してから音声になります。</p></aside></div></section>
+</main>
+<script src="/app.js"></script>
+</body></html>

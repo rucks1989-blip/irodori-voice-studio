@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手動ダウンロード案内 - irodori voice studio</title>
+  <style>
+    body{margin:0;background:#f4f6f8;color:#20242a;font-family:"Yu Gothic UI","Meiryo",sans-serif}main{max-width:760px;margin:40px auto;padding:0 20px 50px}h1{font-size:26px;margin-bottom:8px}.lead{color:#59636e;line-height:1.8}article{background:#fff;margin:18px 0;padding:22px;border-radius:12px;box-shadow:0 3px 14px #18202b12}h2{margin:0 0 10px;font-size:19px}p{line-height:1.75}a{display:inline-block;padding:9px 15px;border-radius:8px;background:#2869d8;color:#fff;text-decoration:none}.note{color:#7a4b00;background:#fff6dc;padding:12px 15px;border-radius:8px}
+  </style>
+</head>
+<body><main>
+  <h1>手動ダウンロードが必要なもの</h1>
+  <p class="lead">自動セットアップで安全に導入できない項目です。必要な機能だけ導入してください。参照音声やLLMは必須ではありません。</p>
+  <article><h2>Python 3.12</h2><p>通常はsetup.batがWindowsの公式パッケージ管理機能を使って確認付きで導入します。それが利用できないPCでは、公式Windows版を手動で導入してください。</p><a href="https://www.python.org/downloads/windows/">ここをクリック</a></article>
+  <article><h2>NVIDIA グラフィックスドライバー</h2><p>GPUを使用するための公式ドライバーです。PCとGPUに合う版を利用者自身で選ぶ必要があるため、自動では変更しません。</p><a href="https://www.nvidia.com/Download/index.aspx">ここをクリック</a></article>
+  <article><h2>GTX 10シリーズ対応 audio.cpp CUDAビルド</h2><p>公式の配布済みCUDA版はGTX 1070などのPascal世代に対応していません。対応版は利用環境に合わせたビルドが必要です。audio.cppの公式ページを案内します。</p><a href="https://github.com/0xShug0/audio.cpp">ここをクリック</a></article>
+  <article><h2>参照音声（WAV）</h2><p>声を指定する任意の音声ファイルです。配布元の権利や利用条件を一律に確認できないため、自動取得しません。自分で使用権を持つ音声を用意してください。リンク先はIrodori-TTS公式サンプルです。</p><a href="https://huggingface.co/Aratako/Irodori-TTS-500M-v3/tree/main/samples">ここをクリック</a></article>
+  <article><h2>会話用LLM（GGUF）</h2><p>会話機能に使う任意の言語モデルです。モデルごとにライセンス、必要メモリ、対応方式が異なるため、自動取得しません。公開モデルの検索ページを案内します。</p><a href="https://huggingface.co/models?library=gguf&amp;pipeline_tag=text-generation">ここをクリック</a></article>
+  <p class="note">ダウンロード前に、各配布ページのライセンスと利用条件を必ず確認してください。</p>
+</main></body></html>
