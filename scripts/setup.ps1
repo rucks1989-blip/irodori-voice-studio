@@ -13,6 +13,7 @@ $Runtime = Join-Path $Root "runtime"
 $StatePath = Join-Path $Data "setup-state.json"
 $ManualGuide = Join-Path $Root "download_links.html"
 $ResultPage = Join-Path $Data "setup-result.html"
+$RepositoryUrl = "https://github.com/rucks1989-blip/irodori-voice-studio"
 
 $AudioRelease = "release-0.3-qwen3-tts"
 $AudioBase = "https://github.com/0xShug0/audio.cpp/releases/download/$AudioRelease"
@@ -234,6 +235,10 @@ $recommendedText
 $optionalText
 
 【依頼】
+公式リポジトリ: $RepositoryUrl
+必要に応じて、リポジトリ内のREADME.md、SETUP_MANUAL.txt、download_links.html、gpu.mdを確認してください。
+リポジトリの説明と一般的な情報が食い違う場合は、勝手に断定せず、相違点と確認が必要な事項を説明してください。
+
 上記について、何が必須で何が任意かを最初に説明してください。
 その後、このPCで安全に実行できる手順を初心者向けに一手順ずつ説明してください。
 非公式バイナリを紹介する場合は、実行前に配布元、ライセンス、危険性を説明してください。
@@ -258,7 +263,7 @@ body{margin:0;background:#f4f6f8;color:#20242a;font-family:"Yu Gothic UI","Meiry
 <section><h2 class="warn">未達成・推奨</h2><ul>$recommendedHtml</ul></section>
 <section><h2>任意・未設定</h2><ul>$optionalHtml</ul><p>任意項目は、使わない場合は設定しなくても問題ありません。</p></section>
 <section><h2>分からない場合</h2><p>下のボタンで、ChatGPT・Geminiなどへそのまま貼り付けられる質問文をコピーできます。個人名、ファイル名、絶対パスは含みません。</p>
-<textarea id="aiPrompt" readonly>$promptHtml</textarea><button onclick="copyPrompt()">未達成項目をAI相談用にコピー</button><a class="link" href="../download_links.html">手動ダウンロード案内</a><span id="message"></span></section>
+<textarea id="aiPrompt" readonly>$promptHtml</textarea><button onclick="copyPrompt()">未達成項目をAI相談用にコピー</button><a class="link" href="$(Encode $RepositoryUrl)">公式リポジトリを開く</a><a class="link" href="../download_links.html">手動ダウンロード案内</a><span id="message"></span></section>
 <script>async function copyPrompt(){const t=document.getElementById('aiPrompt'),m=document.getElementById('message');try{await navigator.clipboard.writeText(t.value)}catch(e){t.style.position='static';t.select();document.execCommand('copy');t.style.position='fixed'}m.textContent='コピーしました'}</script>
 </main></body></html>
 "@
