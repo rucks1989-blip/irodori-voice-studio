@@ -64,3 +64,35 @@ GTX 10シリーズでCPU版が導入された場合
 ただし、CUDA版より生成速度は遅くなります。
 
 後からPascal対応版audio.cppを用意すれば、settings.local.json の設定変更だけで利用できるようになります。
+
+これは導入例です
+
+検証1：初回自動セットアップ
+
+事前に存在したもの
+- Windows 11
+- Python 3
+- NVIDIAドライバー
+- インターネット接続
+
+存在しなかったもの
+- audio.cpp runtime
+- Irodori-TTS GGUFモデル
+- 参照WAV
+- LLM
+- ローカル設定
+- 生成履歴
+
+結果
+- setup.batによる公式CPU版audio.cppの取得：成功
+- Irodori-TTSモデルの取得とハッシュ検証：成功
+- start.batからのUI起動：成功
+- CPU音声生成：成功
+- 短文の初回生成：約19秒
+
+検証2：GTX 1070向け外部CUDAバックエンド
+
+- GTX 1070
+- VRAM 8GB
+- Pascal対応として別途用意したaudio.cpp
+- GPU音声生成：成功
