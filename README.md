@@ -6,7 +6,8 @@ Irodori-TTS（audio.cpp版）をブラウザーから手軽に利用するため
 
 GTX 1070（VRAM 8GB）環境での動作を確認しており、長文の自動分割、話者切替、参照WAV管理、無音挿入、WAV結合までをまとめて行えます。
 
-通常の音声生成にはLLMは不要です。初心者向け視点でcodexとchatgpt使って開発しています。
+通常の音声生成にはLLMは不要です。初心者向け視点でcodexとchatgpt使って開発しています。自分が初心者なので初心者がどうやれば使えるか。
+ライセンス的なのをAIに調べさせ自動でダウンロードできるもの、できないものを分けています。
 
 <img width="1265" height="712" alt="image" src="https://github.com/user-attachments/assets/f0adebbe-a024-4644-a8a9-d639ddcc96cd" />
 
