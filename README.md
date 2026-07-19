@@ -65,6 +65,43 @@ Irodori-TTSは長時間の連続生成では品質が低下する場合があり
 
 自動導入できなかった項目は `download_links.html`、詳しい補足は `SETUP_MANUAL.txt` を参照してください。
 
+## 導入例・検証結果
+
+これは導入例です。
+
+### 検証1：初回自動セットアップ
+
+**事前に存在したもの**
+
+- Windows 11
+- Python 3
+- NVIDIAドライバー
+- インターネット接続
+
+**存在しなかったもの**
+
+- audio.cpp runtime
+- Irodori-TTS GGUFモデル
+- 参照WAV
+- LLM
+- ローカル設定
+- 生成履歴
+
+**結果**
+
+- `setup.bat` による公式CPU版audio.cppの取得：成功
+- Irodori-TTSモデルの取得とハッシュ検証：成功
+- `start.bat` からのUI起動：成功
+- CPU音声生成：成功
+- 短文の初回生成：約19秒
+
+### 検証2：GTX 1070向け外部CUDAバックエンド
+
+- GTX 1070
+- VRAM 8GB
+- Pascal対応として別途用意したaudio.cpp
+- GPU音声生成：成功
+
 ## 初心者向けサポート
 
 `setup.bat` の実行後には、セットアップ結果画面が表示されます。
