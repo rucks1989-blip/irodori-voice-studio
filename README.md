@@ -74,6 +74,9 @@ Irodori-TTSは長時間の連続生成では品質が低下する場合があり
 ## 初心者向けサポート
 
 `setup.bat` の実行後には、セットアップ結果画面が表示されます。
+<img width="762" height="883" alt="image" src="https://github.com/user-attachments/assets/7f2b7ac5-380a-49aa-806b-3ea05dbf5757" />
+
+
 
 画面では現在のPC環境を自動で確認し、次の情報などを一覧で確認できます。
 
