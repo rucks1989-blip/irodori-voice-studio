@@ -22,11 +22,11 @@ if (Test-Path $SetupState) {
     } catch { $setupComplete = $false }
 }
 if (-not $setupComplete) {
-    Write-Host "Initial setup has not been completed. Starting setup.bat..."
+    Write-Host "初回セットアップが完了していません。setup.batを開始します。"
     & cmd.exe /d /c "call `"$Root\setup.bat`""
     try { $setupComplete = [bool]((Get-Content $SetupState -Raw -Encoding UTF8 | ConvertFrom-Json).completed) } catch { $setupComplete = $false }
     if ($LASTEXITCODE -ne 0 -or -not $setupComplete) {
-        throw "Initial setup is incomplete. Run setup.bat and follow the instructions."
+        throw "初回セットアップが完了していません。setup.batの日本語案内に従ってください。"
     }
 }
 
@@ -45,7 +45,7 @@ if (-not $python) {
     $localPython = Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe"
     if (Test-Path $localPython) { $pythonPath = $localPython }
 }
-if (-not $pythonPath) { throw "Python 3 was not found." }
+if (-not $pythonPath) { throw "Python 3が見つかりません。" }
 
 function Test-Port([int]$Port) {
     $client = [Net.Sockets.TcpClient]::new()
@@ -54,16 +54,16 @@ function Test-Port([int]$Port) {
         return $task.Wait(500) -and $client.Connected
     } catch { return $false } finally { $client.Dispose() }
 }
-if (Test-Port 6666) { throw "API port 6666 is already in use. Stop the other program first." }
-if (Test-Port 6670) { throw "UI port 6670 is already in use. Stop the other program first." }
+if (Test-Port 6666) { throw "API用の6666番ポートが使用中です。先にほかのプログラムを終了してください。" }
+if (Test-Port 6670) { throw "UI用の6670番ポートが使用中です。先にほかのプログラムを終了してください。" }
 
 try {
     & $pythonPath -c "import requests,numpy,soundfile" 2>$null
 } catch { }
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing required Python packages..."
+    Write-Host "必要なPythonパッケージをインストールしています。"
     & $pythonPath -m pip install -r (Join-Path $Root "requirements.txt")
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install the required Python packages." }
+    if ($LASTEXITCODE -ne 0) { throw "必要なPythonパッケージのインストールに失敗しました。" }
 }
 
 $process = Start-Process -FilePath $pythonPath -ArgumentList @("-X", "utf8", (Join-Path $Root "app.py")) -WorkingDirectory $Root -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -WindowStyle Hidden -PassThru
@@ -72,16 +72,17 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
 while ([DateTime]::UtcNow -lt $deadline) {
     if ($process.HasExited) {
         if (Test-Path $Stderr) { Get-Content $Stderr -Tail 30 }
-        throw "irodori voice studio exited before startup completed."
+        throw "irodori voice studioが起動完了前に終了しました。"
     }
     try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:6670/api/health" -TimeoutSec 2
         if ($health.studio -eq "ok") {
             Start-Process "http://127.0.0.1:6670"
-            Write-Host "irodori voice studio started."
+            Write-Host "irodori voice studioを起動しました。"
             exit 0
         }
     } catch { }
     Start-Sleep -Milliseconds 300
 }
-throw "Timed out while waiting for the UI to start."
+throw "UIの起動待機がタイムアウトしました。"
+
