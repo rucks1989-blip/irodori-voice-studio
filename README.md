@@ -64,6 +64,7 @@ Irodori-TTSは長時間の連続生成では品質が低下する場合があり
 - Irodori-TTS GGUFモデル
 - 参照WAV（任意）
 - 推奨　NVIDIA製のVRAM8GB以上のGPU
+
 初回のみ `setup.bat` を実行してください。
 
 セットアップ完了後は `start.bat` で起動できます。
