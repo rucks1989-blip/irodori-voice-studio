@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$NonInteractive,
     [switch]$AcceptLicenses,
     [switch]$UseExistingBackend,
