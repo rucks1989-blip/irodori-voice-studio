@@ -1,4 +1,4 @@
-param([switch]$NoOpen,[string]$IssueText="")
+﻿param([switch]$NoOpen,[string]$IssueText="")
 $ErrorActionPreference="Stop";$Root=Split-Path -Parent $PSScriptRoot;$Out=Join-Path $Root "ai-support";$Base=Join-Path $PSScriptRoot "create_ai_support.ps1";$IssueFile=Join-Path $Out "困っている内容を記入してください.txt";$Stamp=Get-Date -Format "yyyyMMdd-HHmmss";$Work=Join-Path ([IO.Path]::GetTempPath()) "irodori-full-$Stamp-$PID";$Zip=Join-Path $Out "真・AI調査用一式-$Stamp.zip";$Txt=Join-Path $Out "真・AIへ貼り付ける文章-$Stamp.txt"
 function W([string]$p,[string]$t){New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p)|Out-Null;Set-Content -LiteralPath $p -Value $t -Encoding UTF8}
 function Template {W $IssueFile @"
