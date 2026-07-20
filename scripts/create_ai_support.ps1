@@ -1,4 +1,4 @@
-param([switch]$NoOpen)
+﻿param([switch]$NoOpen)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
