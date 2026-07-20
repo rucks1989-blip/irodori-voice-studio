@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$NonInteractive,
     [switch]$AcceptLicenses,
     [switch]$UseExistingBackend,
@@ -79,6 +79,7 @@ function Confirm-Choice([string]$Prompt, [bool]$DefaultYes = $true) {
     if ($NonInteractive) { return $DefaultYes }
     $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
     $answer = Read-Host "$Prompt $suffix"
+    if ($null -ne $answer) { $answer = $answer.Trim() }
     if (-not $answer) { return $DefaultYes }
     return $answer -match "^[Yy]"
 }
@@ -95,25 +96,25 @@ function Download-Verified($Item, $Destination) {
     if (Test-Path $Destination) {
         $existing = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToLowerInvariant()
         if ($existing -eq $Item.Sha256) {
-            Write-Host "Already verified: $($Item.Name)"
+            Write-Host "確認済みのため再利用します: $($Item.Name)"
             return
         }
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
     $partial = "$Destination.partial"
-    Write-Host "Downloading $($Item.Name)"
-    Write-Host "Source: $($Item.Url)"
+    Write-Host "ダウンロード中: $($Item.Name)"
+    Write-Host "配布元: $($Item.Url)"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
         & $curl.Source --location --fail --retry 5 --retry-delay 2 --continue-at - --output $partial $Item.Url
-        if ($LASTEXITCODE -ne 0) { throw "Download failed for $($Item.Name)." }
+        if ($LASTEXITCODE -ne 0) { throw "$($Item.Name)のダウンロードに失敗しました。" }
     } else {
         Invoke-WebRequest -Uri $Item.Url -OutFile $partial -UseBasicParsing
     }
     $actual = (Get-FileHash -Algorithm SHA256 -Path $partial).Hash.ToLowerInvariant()
     if ($actual -ne $Item.Sha256) {
         Remove-Item -Force $partial -ErrorAction SilentlyContinue
-        throw "SHA-256 verification failed for $($Item.Name)."
+        throw "$($Item.Name)の改ざん検査（SHA-256）に失敗しました。"
     }
     Move-Item -Force $partial $Destination
 }
@@ -131,12 +132,12 @@ function Ensure-Python {
             if ($LASTEXITCODE -eq 0) { return $true }
         } catch { }
     }
-    Write-Host "Python 3 is not installed."
-    Write-Host "Automatic installation uses the official winget Python.Python.3.12 package and changes this Windows user environment."
-    if (-not (Confirm-Choice "Install Python 3.12 for the current user?" $false)) { return $false }
+    Write-Host "Python 3が見つかりません。"
+    Write-Host "自動導入では公式wingetのPython 3.12を使用します。現在のWindowsユーザー環境が変更されます。"
+    if (-not (Confirm-Choice "現在のWindowsユーザーへPython 3.12をインストールしますか？" $false)) { return $false }
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $winget) {
-        Write-Host "winget is unavailable. See download_links.html."
+        Write-Host "wingetを利用できません。download_links.htmlを確認してください。"
         return $false
     }
     & $winget.Source install --id Python.Python.3.12 --exact --scope user --accept-package-agreements --accept-source-agreements
@@ -165,6 +166,42 @@ function Get-RunningBackendKind {
     } catch { return "unknown" }
 }
 
+function Find-ExternalBackendCandidates {
+    $folders=@()
+    foreach($drive in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)){
+        try{$folders+=Get-ChildItem -LiteralPath $drive.Root -Directory -ErrorAction SilentlyContinue|Where-Object{$_.Name -match "(?i)(audio[._-]?cpp|irodori)"}|ForEach-Object{$_.FullName}}catch{}
+    }
+    $results=@();$seen=@{}
+    foreach($folder in ($folders|Select-Object -Unique)){
+        Get-ChildItem -LiteralPath $folder -Filter "audiocpp_server.exe" -File -Recurse -ErrorAction SilentlyContinue|ForEach-Object{
+            if($seen[$_.FullName]){return};$seen[$_.FullName]=$true;$exe=$_.FullName
+            $config=Get-ChildItem -LiteralPath $folder -Filter "server.json" -File -Recurse -ErrorAction SilentlyContinue|Where-Object{
+                try{$j=Get-Content $_.FullName -Raw -Encoding UTF8|ConvertFrom-Json;[int]$j.port -eq 8091 -and ($j.models|Where-Object{[string]$_.family -eq "irodori_tts"})}catch{$false}
+            }|Select-Object -First 1
+            if($config){$results+=[pscustomobject]@{Exe=$exe;Config=$config.FullName}}
+        }
+    }
+    return @($results)
+}
+function Find-ExternalCandidateFromPath([string]$Path){
+    if(-not(Test-Path -LiteralPath $Path)){return $null}
+    $base=if(Test-Path -LiteralPath $Path -PathType Leaf){Split-Path -Parent $Path}else{$Path}
+    $exe=if((Test-Path -LiteralPath $Path -PathType Leaf)-and([IO.Path]::GetFileName($Path)-eq "audiocpp_server.exe")){Get-Item $Path}else{Get-ChildItem $base -Filter "audiocpp_server.exe" -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
+    $config=Get-ChildItem $base -Filter "server.json" -File -Recurse -ErrorAction SilentlyContinue|Where-Object{try{$j=Get-Content $_.FullName -Raw -Encoding UTF8|ConvertFrom-Json;[int]$j.port -eq 8091 -and ($j.models|Where-Object{[string]$_.family -eq "irodori_tts"})}catch{$false}}|Select-Object -First 1
+    if($exe -and $config){return [pscustomobject]@{Exe=$exe.FullName;Config=$config.FullName}};return $null
+}
+function Write-ExternalBackendStarter($Candidate){
+    $path=Join-Path $Data "start_external_backend.ps1";$nl=[Environment]::NewLine
+    $content=@(
+      '$ErrorActionPreference="Stop"','$Root=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)','$PidPath=Join-Path $Root "logs\audio-cpp.pid"','$Stdout=Join-Path $Root "logs\audio-cpp.stdout.log"','$Stderr=Join-Path $Root "logs\audio-cpp.stderr.log"',
+      ('$Exe="{0}"' -f ([string]$Candidate.Exe).Replace('"','""')),('$Config="{0}"' -f ([string]$Candidate.Config).Replace('"','""')),'$ExternalRoot=Split-Path -Parent $Config','$CudaBin=Join-Path $ExternalRoot "toolchain\cuda-12.6\Library\bin"','if(Test-Path $CudaBin){$env:PATH="$CudaBin;$env:PATH"}',
+      'try{if((Invoke-WebRequest "http://127.0.0.1:8091/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200){exit 0}}catch{}',
+      'New-Item -ItemType Directory -Force -Path (Join-Path $Root "logs")|Out-Null',
+      '$p=Start-Process -FilePath $Exe -ArgumentList @("--config",$Config) -WorkingDirectory $ExternalRoot -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -WindowStyle Hidden -PassThru','$p.Id|Set-Content $PidPath -Encoding ascii',
+      '$limit=[DateTime]::UtcNow.AddSeconds(150)','while([DateTime]::UtcNow -lt $limit){if($p.HasExited){throw "外部audio.cppが起動途中で終了しました。"};try{if((Invoke-WebRequest "http://127.0.0.1:8091/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200){exit 0}}catch{};Start-Sleep -Milliseconds 500}','throw "外部audio.cppの起動待機がタイムアウトしました。"'
+    ) -join $nl
+    New-Item -ItemType Directory -Force -Path $Data|Out-Null;Set-Content -LiteralPath $path -Value $content -Encoding UTF8;return $path
+}
 function Test-LlmReady {
     $healthUrl = "http://127.0.0.1:11438/health"
     $settingsPath = Join-Path $Root "settings.local.json"
@@ -196,14 +233,16 @@ function Test-ReferenceVoiceConfigured {
 }
 
 function Write-SetupResult([string]$BackendKind) {
-    $required = @("Python 3", "Irodori-TTSモデル", "audio.cpp音声生成バックエンド")
+    $required = if ($BackendKind -eq "ui-only") { @("Python 3", "ローカルUI") } else { @("Python 3", "Irodori-TTSモデル", "audio.cpp音声生成バックエンド") }
     $recommended = @()
-    if ($gpu.Nvidia -and $BackendKind -ne "cuda") {
+    if ($BackendKind -eq "ui-only") { $recommended += "audio.cpp音声生成バックエンドとIrodori-TTSモデル（UIのみ利用する場合は不要）" }
+    if ($gpu.Nvidia -and $BackendKind -notin @("cuda", "ui-only")) {
         $recommended += "GPU高速化（現在は$BackendKind バックエンドで動作）"
     }
     $optional = @()
     if (-not (Test-ReferenceVoiceConfigured)) { $optional += "参照音声WAV（なくても音声生成は可能）" }
     if (-not (Test-LlmReady)) { $optional += "会話用LLM（会話機能を使う場合のみ必要）" }
+    $headline = if ($BackendKind -eq "ui-only") { "UIを表示する準備が完了しました。音声生成バックエンドは未設定です。" } else { "音声生成に必要な準備は完了しました。次回からはstart.batを使用してください。" }
     $remainingCount = $recommended.Count + $optional.Count
     $remainingSummary = if ($remainingCount -eq 0) {
         "未達成・未設定項目はありません。"
@@ -258,7 +297,7 @@ $optionalText
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>セットアップ結果 - irodori voice studio</title><style>
 body{margin:0;background:#f4f6f8;color:#20242a;font-family:"Yu Gothic UI","Meiryo",sans-serif}main{max-width:780px;margin:36px auto;padding:0 20px 50px}section{background:#fff;margin:16px 0;padding:20px 24px;border-radius:12px;box-shadow:0 3px 14px #18202b12}h1{font-size:26px}h2{font-size:19px}.ok{color:#18733c}.warn{color:#955800}.none{color:#607080}li{margin:9px 0;line-height:1.6}button,a.link{display:inline-block;border:0;border-radius:8px;padding:11px 16px;background:#2869d8;color:#fff;text-decoration:none;font-size:15px;cursor:pointer}a.link{background:#59636e;margin-left:8px}textarea{position:fixed;left:-10000px}#message{margin-left:10px;color:#18733c}
-</style></head><body><main><h1>セットアップ結果</h1><p>音声生成に必要な準備は完了しました。次回からは <strong>start.bat</strong> を使用してください。</p><p><strong>$(Encode $remainingSummary)</strong></p>
+</style></head><body><main><h1>セットアップ結果</h1><p><strong>$(Encode $headline)</strong></p><p><strong>$(Encode $remainingSummary)</strong></p>
 <section><h2 class="ok">導入済み</h2><ul>$requiredHtml</ul><p>音声バックエンド: <strong>$(Encode $BackendKind)</strong></p></section>
 <section><h2 class="warn">未達成・推奨</h2><ul>$recommendedHtml</ul></section>
 <section><h2>任意・未設定</h2><ul>$optionalHtml</ul><p>任意項目は、使わない場合は設定しなくても問題ありません。</p></section>
@@ -268,14 +307,14 @@ body{margin:0;background:#f4f6f8;color:#20242a;font-family:"Yu Gothic UI","Meiry
 </main></body></html>
 "@
     Set-Content -Path $ResultPage -Value $html -Encoding UTF8
-    Write-Host "Setup result: $ResultPage"
+    Write-Host "セットアップ結果: $ResultPage"
     Write-Host $remainingSummary
-    Write-Host "Recommended items remaining: $($recommended.Count); optional items unset: $($optional.Count)"
+    Write-Host "未達成・推奨: $($recommended.Count)件、任意・未設定: $($optional.Count)件"
     if (-not $NonInteractive) { Start-Process $ResultPage }
 }
 
 Write-Host ""
-Write-Host "irodori voice studio setup"
+Write-Host "irodori voice studio 初回セットアップ"
 Write-Host "==========================="
 $gpu = Get-GpuInfo
 $pythonReady = ($null -ne (Get-Command python.exe -ErrorAction SilentlyContinue)) -or (Test-Path (Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe"))
@@ -283,38 +322,89 @@ $backendReady = Test-AudioBackend
 if ($ForceManagedBackend) { $backendReady = $false }
 Write-Host "OS: $([Environment]::OSVersion.VersionString)"
 Write-Host "GPU: $($gpu.Name)"
-if ($gpu.Driver) { Write-Host "NVIDIA driver: $($gpu.Driver)" }
-if ($gpu.Compute) { Write-Host "Compute capability: $($gpu.Compute)" }
-Write-Host "Python: $(if ($pythonReady) {'found'} else {'missing'})"
-Write-Host "audio.cpp on port 8091: $(if ($backendReady) {'ready'} else {'missing'})"
-Write-Host "The diagnostic information above stays on this PC."
+if ($gpu.Driver) { Write-Host "NVIDIAドライバー: $($gpu.Driver)" }
+if ($gpu.Compute) { Write-Host "Compute Capability: $($gpu.Compute)" }
+Write-Host "Python: $(if ($pythonReady) {'見つかりました'} else {'見つかりません'})"
+Write-Host "audio.cpp（8091番ポート）: $(if ($backendReady) {'起動済み'} else {'起動していません'})"
+Write-Host "上記の診断情報が外部へ送信されることはありません。"
 
 if ($CheckOnly) { exit 0 }
 
+if ($backendReady) {
+    Write-Host "すでに起動しているaudio.cppを再利用します。"
+    if (-not (Ensure-Python)) { Write-Host "UIの起動にはPython 3が必要です。"; exit 3 }
+    $state=[ordered]@{setup_version=2;completed=$true;backend="external";gpu=$gpu.Name;model="external";completed_at=(Get-Date).ToString("o")}
+    Save-Json $StatePath $state;Write-LocalSettings "";Write-SetupResult (Get-RunningBackendKind)
+    Write-Host "セットアップが完了しました。次回からstart.batを使用してください。";exit 0
+}
+$externalCandidate=$null
+if(-not $ForceManagedBackend -and (Confirm-Choice "PC内に既存の外部audio.cpp環境が存在するか調べてもよいですか？" $true)){
+    Write-Host "audio.cpp / Irodoriらしいフォルダーを検索しています。外部フォルダーは変更しません。"
+    $candidates=@(Find-ExternalBackendCandidates)
+    if($candidates.Count){
+        Write-Host "再利用できる可能性がある環境を見つけました。"
+        for($i=0;$i -lt $candidates.Count;$i++){Write-Host "[$($i+1)] $($candidates[$i].Exe)";Write-Host "    設定: $($candidates[$i].Config)"}
+        $selected=Read-Host "使用する番号を入力してください（使用しない場合は0）";$selected=$selected.Trim();$n=0
+        if([int]::TryParse($selected,[ref]$n)-and$n -ge 1-and$n -le $candidates.Count){$externalCandidate=$candidates[$n-1]}
+    }else{
+        Write-Host "自動検索では見つかりませんでした。"
+        $manual=Read-Host "場所が分かる場合はフォルダーまたはaudiocpp_server.exeのパスを入力してください（分からなければEnter）"
+        if($manual){$externalCandidate=Find-ExternalCandidateFromPath $manual.Trim('"')}
+    }
+}
+if($externalCandidate){
+    Write-Host "外部audio.cppを起動確認します。外部フォルダーの内容は変更しません。"
+    $starter=Write-ExternalBackendStarter $externalCandidate
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $starter
+    if($LASTEXITCODE -eq 0-and(Test-AudioBackend)){
+        if(-not(Ensure-Python)){Write-Host "UIの起動にはPython 3が必要です。";exit 3}
+        $state=[ordered]@{setup_version=2;completed=$true;backend="external";gpu=$gpu.Name;model="external";external_exe=$externalCandidate.Exe;external_config=$externalCandidate.Config;completed_at=(Get-Date).ToString("o")}
+        Save-Json $StatePath $state;Write-LocalSettings $starter;Write-SetupResult (Get-RunningBackendKind)
+        Write-Host "外部audio.cppの再利用設定が完了しました。";exit 0
+    }
+    Write-Host "外部audio.cppを正常起動できませんでした。" -ForegroundColor Yellow
+}
 Write-Host ""
-Write-Host "Licenses and usage conditions"
+Write-Host "次の操作を選択してください。"
+Write-Host "[1] 必要なaudio.cppとIrodoriモデルを確認後にダウンロードする"
+Write-Host "[2] ダウンロードせずUIだけ起動できる状態にする"
+Write-Host "    音声生成は動かない可能性が高いですが、UIと設定画面は表示できます。"
+Write-Host "[3] 何も変更せずセットアップを中止する"
+$choice=if($NonInteractive){"2"}else{Read-Host "番号を入力してください（既定: 2）"}
+if($null -ne $choice){$choice=$choice.Trim()}
+if(-not $choice){$choice="2"}
+if($choice -eq "2"){
+    if(-not(Ensure-Python)){Write-Host "UIの起動にはPython 3が必要です。";exit 3}
+    $state=[ordered]@{setup_version=2;completed=$true;backend="ui-only";gpu=$gpu.Name;model="未設定";completed_at=(Get-Date).ToString("o")}
+    Save-Json $StatePath $state;Write-LocalSettings "";Write-SetupResult "ui-only"
+    Write-Host "UIだけ起動する設定が完了しました。音声生成にはaudio.cppとモデルが必要です。";exit 0
+}
+if($choice -ne "1"){Write-Host "セットアップを中止しました。ダウンロードは行っていません。";exit 2}
+
+Write-Host ""
+Write-Host "ライセンスと利用条件"
 Write-Host "- irodori voice studio: MIT"
 Write-Host "- audio.cpp: Apache-2.0 (https://github.com/0xShug0/audio.cpp)"
-Write-Host "- Irodori-TTS / model: MIT (https://huggingface.co/Aratako/Irodori-TTS-500M-v3)"
-Write-Host "- audio.cpp standalone GGUF: MIT model contents (https://huggingface.co/audio-cpp/audio.cpp-gguf)"
-Write-Host "Use only reference audio you have the right to use. Do not use voice cloning for impersonation, fraud, or misinformation."
-Write-Host "Full notices are in LICENSES.md. Manual download links are in download_links.html."
-if (-not $AcceptLicenses -and -not (Confirm-Choice "I have reviewed and accept these licenses and conditions." $false)) {
-    Write-Host "Setup cancelled without downloading files."
+Write-Host "- Irodori-TTSモデル: MIT (https://huggingface.co/Aratako/Irodori-TTS-500M-v3)"
+Write-Host "- audio.cpp用GGUFモデル: MIT (https://huggingface.co/audio-cpp/audio.cpp-gguf)"
+Write-Host "利用権限のある参照音声だけを使用してください。なりすまし、詐欺、誤情報への利用は禁止です。"
+Write-Host "詳細はLICENSES.md、手動ダウンロード先はdownload_links.htmlにあります。"
+if (-not $AcceptLicenses -and -not (Confirm-Choice "ライセンスと利用条件を確認し、ダウンロードへ進みますか？" $false)) {
+    Write-Host "ダウンロードせずセットアップを中止しました。"
     exit 2
 }
 
 if (-not (Ensure-Python)) {
-    Write-Host "Python remains missing. See download_links.html, then run setup.bat again."
+    Write-Host "Python 3を準備できませんでした。download_links.htmlを確認してからsetup.batを再実行してください。"
     if (-not $NonInteractive) { Start-Process $ManualGuide }
     exit 3
 }
 
 if ($UseExistingBackend -and -not $backendReady) {
-    throw "UseExistingBackend was requested, but no healthy audio.cpp server is running on port 8091."
+    throw "既存audio.cppの使用を指定しましたが、8091番ポートで正常なサーバーを確認できません。"
 }
 if ($backendReady) {
-    Write-Host "Using the existing audio.cpp backend on port 8091."
+    Write-Host "8091番ポートで起動済みのaudio.cppを使用します。"
     $state = [ordered]@{
         setup_version = 1; completed = $true; backend = "external"; gpu = $gpu.Name
         model = "external"; completed_at = (Get-Date).ToString("o")
@@ -322,7 +412,7 @@ if ($backendReady) {
     Save-Json $StatePath $state
     Write-LocalSettings ""
     Write-SetupResult (Get-RunningBackendKind)
-    Write-Host "Setup completed. Use start.bat from now on."
+    Write-Host "セットアップが完了しました。次回からstart.batを使用してください。"
     exit 0
 }
 
@@ -335,16 +425,19 @@ $pascal = $gpu.Nvidia -and (($compute -gt 0 -and $compute -lt 7.5) -or $gpu.Name
 $backend = if ($cudaSupported) { "cuda" } else { "cpu" }
 
 if ($pascal) {
-    Write-Host "The official automatic CUDA package does not support GTX 10-series Pascal GPUs."
-    Write-Host "A Pascal-compatible CUDA build must be prepared manually. The automatic fallback is CPU inference."
-    if (-not (Confirm-Choice "Install the slower official CPU backend as a fallback?" $true)) {
+    Write-Host "公式の自動CUDA版はGTX 10シリーズ（Pascal）に対応していません。"
+    Write-Host "Pascal対応CUDA版は別途用意が必要です。自動導入できるのは低速なCPU版です。"
+    if (-not (Confirm-Choice "低速な公式CPU版をダウンロードしますか？" $false)) {
         if (-not $NonInteractive) { Start-Process $ManualGuide }
         exit 4
     }
 }
 if ($gpu.Nvidia -and -not $cudaSupported -and -not $pascal) {
-    Write-Host "The official CUDA package requires compute capability 7.5+ and NVIDIA driver 580+. CPU fallback will be installed."
+    Write-Host "公式CUDA版にはCompute Capability 7.5以上とNVIDIAドライバー580以上が必要です。条件を満たさないためCPU版が候補になります。"
 }
+
+Write-Host "ダウンロード内容: audio.cpp本体とIrodori-TTSモデル（モデルは約1.09GB）"
+if (-not (Confirm-Choice "上記ファイルのダウンロードを開始してよいですか？" $false)) { Write-Host "ダウンロードせず中止しました。"; exit 4 }
 
 $downloads = Join-Path $Runtime "downloads"
 $audioDir = Join-Path $Runtime "audio_cpp"
@@ -382,7 +475,7 @@ Write-LocalSettings (Join-Path $PSScriptRoot "start_backend.ps1")
 $backendStarter = Join-Path $PSScriptRoot "start_backend.ps1"
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $backendStarter
 if ($LASTEXITCODE -ne 0 -or -not (Test-AudioBackend)) {
-    throw "The downloaded audio.cpp backend did not pass its startup check. Setup was not marked complete."
+    throw "ダウンロードしたaudio.cppの起動確認に失敗しました。セットアップ完了にはしていません。"
 }
 $state = [ordered]@{
     setup_version = 1; completed = $true; backend = $backend; gpu = $gpu.Name
@@ -390,4 +483,5 @@ $state = [ordered]@{
 }
 Save-Json $StatePath $state
 Write-SetupResult $backend
-Write-Host "Setup completed. Use start.bat from now on."
+Write-Host "セットアップが完了しました。次回からstart.batを使用してください。"
+
