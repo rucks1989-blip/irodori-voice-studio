@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $PidPath = Join-Path $Root "logs\studio.pid"
 $Stdout = Join-Path $Root "logs\studio.stdout.log"
