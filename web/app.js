@@ -21,9 +21,10 @@ function llmButton(label,action,data){return `<button type="button" class="secon
 function renderLlmCandidates(data){
   const rows=[];
   const ollama=data.ollama||{};
+  const llamaCpp=data.llama_cpp||{};
   const localFolder=(data.llm_folder||"").toLocaleLowerCase();
   (ollama.models||[]).forEach(item=>rows.push(`<article class="llm-candidate"><div><strong>Ollama：${escapeHtml(item.name)}</strong><small>${formatBytes(item.size)}・既存モデル</small></div><div>${llmButton("そのまま使う","select-ollama",{model:item.name})}${llmButton("llmフォルダーへコピーして使う","copy-ollama",{model:item.name})}</div></article>`));
-  (data.gguf||[]).forEach(item=>{const isLocal=item.path.toLocaleLowerCase().startsWith(localFolder+"\\");rows.push(`<article class="llm-candidate ${item.valid?"":"invalid"}"><div><strong>${escapeHtml(item.name)}</strong><small>${formatBytes(item.size)}・${escapeHtml(item.reason)}<br>${escapeHtml(item.path)}</small></div><div>${item.valid?llmButton(isLocal?"このGGUFを使う":"llmフォルダーへコピーして使う","select-gguf",{path:item.path}):""}</div></article>`)});
+  (data.gguf||[]).forEach(item=>{const isLocal=item.path.toLocaleLowerCase().startsWith(localFolder+"\\");const gpuButton=item.valid&&llamaCpp.available?llmButton("対応llama.cppでGPU使用","select-llama-cpp",{path:item.path}):"";rows.push(`<article class="llm-candidate ${item.valid?"":"invalid"}"><div><strong>${escapeHtml(item.name)}</strong><small>${formatBytes(item.size)}・${escapeHtml(item.reason)}<br>${escapeHtml(item.path)}</small></div><div>${gpuButton}${item.valid?llmButton(isLocal?"Ollamaへ登録":"llmへコピーしてOllamaで使う","select-gguf",{path:item.path}):""}</div></article>`)});
   $("llmCandidates").innerHTML=rows.length?rows.join(""):`<p>利用可能なLLMは見つかりませんでした。<br><code>${escapeHtml(data.llm_folder||"llm")}</code> へGGUFを入れて再検索してください。</p>`;
 }
 async function discoverLlm(deep=false){
@@ -40,7 +41,7 @@ document.querySelectorAll(".tabs button").forEach(button=>button.addEventListene
 }));
 
 async function refreshStatus(){
-  try{const state=await api("/api/health");$("statusDot").className=state.backend_ready?"ok":"error";$("statusText").textContent=state.backend_ready?"準備完了":"audio.cpp未接続";$("statusDetail").textContent=state.backend_ready?`${state.model}・ローカル接続済み`:state.backend_detail;$("llmGuide").classList.toggle("ready",state.llm_ready);$("llmGuide").querySelector("strong").textContent=state.llm_ready?`LLM接続済み：${state.llm_model}`:"LLMを追加すると会話ができます"}
+  try{const state=await api("/api/health");$("statusDot").className=state.backend_ready?"ok":"error";$("statusText").textContent=state.backend_ready?"準備完了":"audio.cpp未接続";$("statusDetail").textContent=state.backend_ready?`${state.model}・ローカル接続済み`:state.backend_detail;$("llmGuide").classList.toggle("ready",state.llm_ready||state.llm_configured);$("llmGuide").querySelector("strong").textContent=state.llm_ready?`LLM起動中：${state.llm_model}`:state.llm_configured?`LLM設定済み：${state.llm_model}（送信時に起動）`:"LLMを追加すると会話ができます"}
   catch(error){$("statusDot").className="error";$("statusText").textContent="UIエラー";$("statusDetail").textContent=error.message}
 }
 
@@ -198,6 +199,7 @@ $("llmCandidates").addEventListener("click",async event=>{
       await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"gguf",path:copied.gguf.path})});
     }
     if(action==="select-gguf")await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"gguf",path:decodeURIComponent(button.dataset.path)})});
+    if(action==="select-llama-cpp")await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"llama_cpp",path:decodeURIComponent(button.dataset.path)})});
     await loadSettings();await refreshStatus();$("llmSearchMessage").textContent="LLMを設定しました。返答テストを実行できます。";await discoverLlm(false);
   }catch(error){$("llmSearchMessage").textContent=error.message}finally{button.disabled=false}
 });

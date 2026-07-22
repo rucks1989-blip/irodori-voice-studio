@@ -126,3 +126,5 @@ def chat(character, user_text, history, settings):
     finally:
         if settings.get("llm_provider") == "ollama" and settings.get("llm_unload_after_reply", True):
             unload_ollama(str(settings.get("llm_model") or ""))
+        elif settings.get("llm_provider") == "llama_cpp" and settings.get("llm_unload_after_reply", True):
+            run_command(settings.get("llm_stop_command"))

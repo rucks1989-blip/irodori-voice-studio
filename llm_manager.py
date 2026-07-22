@@ -43,6 +43,22 @@ def find_ollama_executable():
     return ""
 
 
+def find_llama_server(root):
+    root = Path(root).resolve()
+    candidates = [
+        root / "runtime" / "llama_cpp" / "llama-server.exe",
+        root / "vendor" / "llama_cpp_pascal" / "llama-server.exe",
+        root.parent / "KurisuModel" / "vendor" / "llama_cpp_pascal" / "llama-server.exe",
+    ]
+    found = shutil.which("llama-server.exe") or shutil.which("llama-server")
+    if found:
+        candidates.insert(0, Path(found))
+    for path in candidates:
+        if Path(path).is_file():
+            return str(Path(path).resolve())
+    return ""
+
+
 def ollama_ready():
     try:
         return requests.get("http://127.0.0.1:11434/api/tags", timeout=1).ok
@@ -143,11 +159,64 @@ def discover_gguf(root, deep=False):
 
 def discover(root, deep=False):
     executable = find_ollama_executable()
+    llama_server = find_llama_server(root)
     return {
         "llm_folder": str((Path(root) / "llm").resolve()),
         "ollama": {"installed": bool(executable), "running": ollama_ready(), "executable": executable, "models": list_ollama_models(executable)},
+        "llama_cpp": {"available": bool(llama_server), "executable": llama_server, "gpu_note": "GPU対応は検出したllama.cppビルドに依存します。"},
         "gguf": discover_gguf(root, deep=deep),
         "deep": bool(deep),
+    }
+
+
+def _ps_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def configure_llama_cpp(root, gguf_path):
+    root = Path(root).resolve()
+    executable = find_llama_server(root)
+    if not executable:
+        raise RuntimeError("GPU対応llama.cppが見つかりません。")
+    path = Path(gguf_path).resolve()
+    local = (root / "llm").resolve()
+    if not _gguf_info(path)["valid"]:
+        raise ValueError("正常なGGUFを選択してください。")
+    if local not in path.parents:
+        local.mkdir(parents=True, exist_ok=True)
+        target = local / path.name
+        if not target.exists():
+            shutil.copy2(path, target)
+        path = target.resolve()
+    data = root / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    start_script = data / "start_llama_cpp_gpu.ps1"
+    stop_script = data / "stop_llama_cpp_gpu.ps1"
+    pid_path = root / "logs" / "llama-gpu.pid"
+    stdout = root / "logs" / "llama-gpu.stdout.log"
+    stderr = root / "logs" / "llama-gpu.stderr.log"
+    start_script.write_text(f'''$ErrorActionPreference="Stop"
+try{{if((Invoke-RestMethod "http://127.0.0.1:11438/health" -TimeoutSec 2).status -eq "ok"){{exit 0}}}}catch{{}}
+if(Get-NetTCPConnection -LocalPort 11438 -State Listen -ErrorAction SilentlyContinue){{throw "11438番ポートが別の処理で使用中です。"}}
+New-Item -ItemType Directory -Force -Path {_ps_quote(pid_path.parent)}|Out-Null
+$p=Start-Process -FilePath {_ps_quote(executable)} -ArgumentList @("--model",{_ps_quote(path)},"--host","127.0.0.1","--port","11438","--no-webui","--offline","-c","4096","-np","1","-ngl","99","--no-mmap","--flash-attn","off","--cache-ram","0","--reasoning","off","--reasoning-format","none") -WorkingDirectory {_ps_quote(Path(executable).parent)} -RedirectStandardOutput {_ps_quote(stdout)} -RedirectStandardError {_ps_quote(stderr)} -WindowStyle Hidden -PassThru
+$p.Id|Set-Content {_ps_quote(pid_path)} -Encoding ascii
+$limit=[DateTime]::UtcNow.AddSeconds(150)
+while([DateTime]::UtcNow -lt $limit){{if($p.HasExited){{throw "llama.cppが起動途中で終了しました。"}};try{{if((Invoke-RestMethod "http://127.0.0.1:11438/health" -TimeoutSec 2).status -eq "ok"){{exit 0}}}}catch{{}};Start-Sleep -Milliseconds 500}}
+throw "llama.cppの起動待機がタイムアウトしました。"
+''', encoding="utf-8-sig")
+    stop_script.write_text(f'''$pidPath={_ps_quote(pid_path)}
+if(Test-Path $pidPath){{$idValue=0;if([int]::TryParse((Get-Content $pidPath -Raw).Trim(),[ref]$idValue)){{$p=Get-Process -Id $idValue -ErrorAction SilentlyContinue;if($p -and $p.Path -eq {_ps_quote(executable)}){{Stop-Process -Id $idValue -Force}}}};Remove-Item $pidPath -Force -ErrorAction SilentlyContinue}}
+''', encoding="utf-8-sig")
+    return {
+        "llm_provider": "llama_cpp",
+        "llm_endpoint": "http://127.0.0.1:11438/v1/chat/completions",
+        "llm_health_url": "http://127.0.0.1:11438/health",
+        "llm_model": path.stem,
+        "llm_model_path": str(path),
+        "llm_unload_after_reply": True,
+        "llm_start_command": str(start_script),
+        "llm_stop_command": str(stop_script),
     }
 
 

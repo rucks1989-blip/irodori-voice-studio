@@ -14,7 +14,7 @@ import requests
 
 from studio_core import build_plan, save_temporary_wav, save_uploaded_wav, synthesize
 from chat_service import chat as call_llm, llm_health, load_character, run_command
-from llm_manager import copy_ollama_model, discover, register_gguf_with_ollama, select_ollama_model
+from llm_manager import configure_llama_cpp, copy_ollama_model, discover, register_gguf_with_ollama, select_ollama_model
 from long_jobs import LongJobManager
 
 
@@ -167,7 +167,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 config = settings()
                 ready, detail = backend_status(config)
-                self.send_json(200, {"studio": "ok", "backend_ready": ready, "backend_detail": detail, "model": config.get("model"), "llm_ready": llm_health(config), "llm_model": config.get("llm_model")})
+                llm_configured = bool(config.get("llm_endpoint") and config.get("llm_model") and (config.get("llm_provider") != "llama_cpp" or config.get("llm_start_command")))
+                self.send_json(200, {"studio": "ok", "backend_ready": ready, "backend_detail": detail, "model": config.get("model"), "llm_ready": llm_health(config), "llm_configured": llm_configured, "llm_provider": config.get("llm_provider"), "llm_model": config.get("llm_model")})
             elif path == "/api/settings":
                 refs = sorted(p.name for p in (ROOT / "data" / "voice_refs").glob("*.wav")) if (ROOT / "data" / "voice_refs").is_dir() else []
                 self.send_json(200, {"settings": public_settings(settings()), "voice_refs": refs})
@@ -245,6 +246,8 @@ class Handler(BaseHTTPRequestHandler):
                     config = select_ollama_model(str(payload.get("model") or ""))
                 elif source == "gguf":
                     config = register_gguf_with_ollama(ROOT, str(payload.get("path") or ""))
+                elif source == "llama_cpp":
+                    config = configure_llama_cpp(ROOT, str(payload.get("path") or ""))
                 else:
                     raise ValueError("LLMの種類を選択してください。")
                 write_local(config)
