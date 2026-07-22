@@ -3,8 +3,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP = {".git", ".venv", "data", "outputs", "logs", "models", "runtime", "__pycache__"}
+SKIP = {".git", ".venv", "data", "outputs", "logs", "models", "runtime", "ai-support", "llm", "__pycache__"}
 SKIP_FILES = {"settings.local.json"}
+ALLOWED_ABSOLUTE_PATH_FILES = {Path("scripts/create_ai_support.ps1")}
 DENIED_SUFFIXES = {".wav", ".mp3", ".flac", ".safetensors", ".ckpt", ".pth", ".pt", ".gguf", ".onnx", ".bin"}
 problems = []
 for path in ROOT.rglob("*"):
@@ -20,7 +21,7 @@ for path in ROOT.rglob("*"):
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         continue
-    if re.search(r"(?<![A-Za-z])[A-Za-z]:[\\/]", text):
+    if re.search(r"(?<![A-Za-z])[A-Za-z]:[\\/]", text) and path.relative_to(ROOT) not in ALLOWED_ABSOLUTE_PATH_FILES:
         problems.append(f"Windows絶対パス: {path.relative_to(ROOT)}")
 
 if problems:

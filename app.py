@@ -8,12 +8,14 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 
 from studio_core import build_plan, save_temporary_wav, save_uploaded_wav, synthesize
 from chat_service import chat as call_llm, llm_health, load_character, run_command
+from llm_manager import copy_ollama_model, discover, register_gguf_with_ollama, select_ollama_model
+from long_jobs import LongJobManager
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +27,7 @@ HISTORY = ROOT / "data" / "history.json"
 LOCK = threading.Lock()
 CHAT_LOCK = threading.Lock()
 CHAT_HISTORY = {}
+JOB_MANAGER = None
 
 
 def read_json(path, fallback):
@@ -158,7 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         try:
             if path == "/api/health":
                 config = settings()
@@ -171,6 +175,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"items": history()})
             elif path == "/api/characters":
                 self.send_json(200, {"characters": [character_info(item) for item in character_files()]})
+            elif path == "/api/llm/discover":
+                deep = (parse_qs(parsed_url.query).get("deep") or ["0"])[0] == "1"
+                self.send_json(200, discover(ROOT, deep=deep))
+            elif path == "/api/jobs/active":
+                self.send_json(200, {"job": JOB_MANAGER.active() if JOB_MANAGER else None})
+            elif path.startswith("/api/jobs/"):
+                job_id = Path(unquote(path)).name
+                self.send_json(200, {"job": JOB_MANAGER.get(job_id)})
             elif path.startswith("/outputs/"):
                 target = (OUTPUTS / Path(unquote(path)).name).resolve()
                 if not target.is_file() or OUTPUTS.resolve() not in target.parents:
@@ -216,6 +228,47 @@ class Handler(BaseHTTPRequestHandler):
                 target.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
                 info = character_info(target)
                 self.send_json(200, {"status": "saved", "character": info})
+                return
+            if path == "/api/llm/copy-ollama":
+                info = copy_ollama_model(ROOT, str(payload.get("model") or ""))
+                self.send_json(200, {"status": "copied", "gguf": info})
+                return
+            if path == "/api/llm/open-folder":
+                folder = ROOT / "llm"
+                folder.mkdir(parents=True, exist_ok=True)
+                os.startfile(folder)
+                self.send_json(200, {"status": "opened", "folder": str(folder)})
+                return
+            if path == "/api/llm/select":
+                source = str(payload.get("source") or "")
+                if source == "ollama":
+                    config = select_ollama_model(str(payload.get("model") or ""))
+                elif source == "gguf":
+                    config = register_gguf_with_ollama(ROOT, str(payload.get("path") or ""))
+                else:
+                    raise ValueError("LLMの種類を選択してください。")
+                write_local(config)
+                self.send_json(200, {"status": "selected", "settings": public_settings(settings())})
+                return
+            if path == "/api/llm/test":
+                config = settings()
+                reply = call_llm(
+                    {"name": "リリー", "system_prompt": "あなたはツンデレの女の子リリーです。日本語で一文だけ返答してください。"},
+                    str(payload.get("message") or "こんにちは。自己紹介して。"), [], config,
+                )
+                self.send_json(200, {"status": "ok", "reply": reply, "model": config.get("llm_model")})
+                return
+            if path.startswith("/api/jobs/"):
+                parts = [part for part in path.split("/") if part]
+                if len(parts) != 4 or parts[1] != "jobs":
+                    raise ValueError("長文生成ジョブの操作が正しくありません。")
+                job_id, action = parts[2], parts[3]
+                if action == "cancel":
+                    self.send_json(200, {"job": JOB_MANAGER.cancel(job_id)})
+                elif action == "resume":
+                    self.send_json(200, {"job": JOB_MANAGER.resume(job_id)})
+                else:
+                    raise ValueError("長文生成ジョブの操作が正しくありません。")
                 return
             if path == "/api/chat/reset":
                 character_file = Path(str(payload.get("character") or "")).name
@@ -281,11 +334,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"chunks": build_plan(text, config, ROOT)})
                 return
             if path == "/api/generate":
-                if not LOCK.acquire(blocking=False):
-                    self.send_json(409, {"error": "別の音声を生成中です。"})
-                    return
                 started = time.perf_counter()
                 temporary_voice = None
+                lock_acquired = False
                 try:
                     voice_name = str(payload.get("voice_name") or "")
                     voice_data = str(payload.get("voice_data") or "")
@@ -298,6 +349,20 @@ class Handler(BaseHTTPRequestHandler):
                             temporary_voice = save_temporary_wav(voice_name, voice_data)
                             selected_voice = temporary_voice
                         config["default_voice"] = str(selected_voice)
+                    plan = build_plan(text, config, ROOT)
+                    if not plan:
+                        raise RuntimeError("読み上げ対象がありません。")
+                    if len(text) >= 2000 or len(plan) >= 20:
+                        if LOCK.locked():
+                            self.send_json(409, {"error": "別の音声を生成中です。"})
+                            return
+                        job = JOB_MANAGER.create(text, config, plan, str(temporary_voice or ""), voice_name if temporary_voice else "")
+                        self.send_json(202, {"long_job": True, "job": job})
+                        return
+                    if not LOCK.acquire(blocking=False):
+                        self.send_json(409, {"error": "別の音声を生成中です。"})
+                        return
+                    lock_acquired = True
                     output, plan = synthesize(text, config, ROOT)
                     OUTPUTS.mkdir(parents=True, exist_ok=True)
                     filename = f"irodori_{datetime.now():%Y%m%d_%H%M%S_%f}.wav"
@@ -306,7 +371,8 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     if temporary_voice:
                         temporary_voice.unlink(missing_ok=True)
-                    LOCK.release()
+                    if lock_acquired:
+                        LOCK.release()
                 elapsed = time.perf_counter() - started
                 used_voices = sorted({Path(item.get("voice_ref") or "").name for item in plan if item.get("voice_ref")})
                 if temporary_voice and temporary_voice.name in used_voices:
@@ -330,8 +396,10 @@ def maybe_start_backend(config):
 
 
 def main():
+    global JOB_MANAGER
     config = settings()
     maybe_start_backend(config)
+    JOB_MANAGER = LongJobManager(ROOT, LOCK, add_history, maybe_start_backend)
     api_server = ThreadingHTTPServer(("127.0.0.1", 6666), Handler)
     ui_server = ThreadingHTTPServer(("127.0.0.1", 6670), Handler)
     threading.Thread(target=api_server.serve_forever, name="local-api-6666", daemon=True).start()

@@ -219,25 +219,30 @@ def synthesize_chunk(text, voice_ref, settings):
 
 
 def combine_wavs(paths, gaps, fade_ms=5):
-    arrays, rate, channels = [], None, None
-    for index, path in enumerate(paths):
-        audio, current_rate = sf.read(str(path), always_2d=True, dtype="float32")
-        if rate is None:
-            rate, channels = current_rate, audio.shape[1]
-        elif current_rate != rate or audio.shape[1] != channels:
-            raise RuntimeError("生成WAVの形式が一致しません。")
-        frames = min(len(audio) // 2, int(rate * int(fade_ms or 0) / 1000))
-        if frames:
-            audio[:frames] *= np.linspace(0, 1, frames, dtype=np.float32)[:, None]
-            audio[-frames:] *= np.linspace(1, 0, frames, dtype=np.float32)[:, None]
-        arrays.append(audio)
-        if index < len(paths) - 1:
-            silence = int(rate * int(gaps[index] or 0) / 1000)
-            if silence:
-                arrays.append(np.zeros((silence, channels), dtype=np.float32))
+    if not paths:
+        raise RuntimeError("結合するWAVがありません。")
+    first_info = sf.info(str(paths[0]))
+    rate, channels = first_info.samplerate, first_info.channels
     fd, output = tempfile.mkstemp(prefix="irodori_studio_", suffix=".wav")
     os.close(fd)
-    sf.write(output, np.concatenate(arrays), rate, subtype="PCM_16")
+    try:
+        with sf.SoundFile(output, mode="w", samplerate=rate, channels=channels, subtype="PCM_16") as writer:
+            for index, path in enumerate(paths):
+                audio, current_rate = sf.read(str(path), always_2d=True, dtype="float32")
+                if current_rate != rate or audio.shape[1] != channels:
+                    raise RuntimeError("生成WAVの形式が一致しません。")
+                frames = min(len(audio) // 2, int(rate * int(fade_ms or 0) / 1000))
+                if frames:
+                    audio[:frames] *= np.linspace(0, 1, frames, dtype=np.float32)[:, None]
+                    audio[-frames:] *= np.linspace(1, 0, frames, dtype=np.float32)[:, None]
+                writer.write(audio)
+                if index < len(paths) - 1:
+                    silence = int(rate * int(gaps[index] or 0) / 1000)
+                    if silence:
+                        writer.write(np.zeros((silence, channels), dtype=np.float32))
+    except Exception:
+        Path(output).unlink(missing_ok=True)
+        raise
     return Path(output)
 
 

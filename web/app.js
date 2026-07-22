@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const llmSettingsPanel=document.createElement("div");
 llmSettingsPanel.className="llm-settings-inline";
-llmSettingsPanel.innerHTML=`<h3>接続設定</h3><label>OpenAI互換Chat API<input id="llm_endpoint"></label><label>ヘルスチェックURL<input id="llm_health_url"></label><label>モデル名（エイリアス）<input id="llm_model"></label><div class="form-grid"><label>Temperature<input id="llm_temperature" type="number" min="0" max="2" step="0.05"></label><label>最大トークン<input id="llm_max_tokens" type="number" min="1" max="4096"></label></div><button class="save primary" type="button">LLM設定を保存</button>`;
+llmSettingsPanel.innerHTML=`<h3>LLMをかんたん設定</h3><p class="hint">GGUFを <code>llm</code> フォルダーへ入れるか、既存のOllamaモデルを選ぶだけで使えます。</p><div class="llm-actions"><button id="scanLlm" class="primary" type="button">自動で探す</button><button id="openLlmFolder" class="secondary" type="button">llmフォルダーを開く</button><button id="deepScanLlm" class="secondary" type="button">全ドライブを詳しく探す</button></div><p id="llmSearchMessage" class="message"></p><div id="llmCandidates" class="llm-candidates muted">「自動で探す」を押してください。</div><div class="llm-test"><button id="testLlm" class="secondary" type="button">選択中のLLMで返答テスト</button><p id="llmTestResult" class="message"></p></div><details class="llm-advanced"><summary>詳細な接続設定</summary><label>OpenAI互換Chat API<input id="llm_endpoint"></label><label>ヘルスチェックURL<input id="llm_health_url"></label><label>モデル名<input id="llm_model"></label><div class="form-grid"><label>Temperature<input id="llm_temperature" type="number" min="0" max="2" step="0.05"></label><label>最大トークン<input id="llm_max_tokens" type="number" min="1" max="4096"></label></div><button class="save primary" type="button">詳細設定を保存</button></details>`;
 document.querySelector(".llm-example").appendChild(llmSettingsPanel);
 const fields = ["audio_cpp_url","audio_cpp_health_url","model","num_steps","seed","target_chars","backtrack_chars","silence_sentence_ms","silence_dialogue_ms","silence_hard_ms","fade_ms","default_voice","llm_endpoint","llm_health_url","llm_model","llm_temperature","llm_max_tokens"];
 const checks = ["reader_extraction_enabled","speaker_switch_enabled"];
@@ -10,13 +10,33 @@ let speakerAliases = {};
 let quickVoice = null;
 let quickVoiceRead = Promise.resolve();
 let quickVoiceVersion = 0;
+let activeLongJobId="";
+let longJobTimer=0;
 
 function escapeHtml(value){const node=document.createElement("span");node.textContent=value;return node.innerHTML}
 async function api(url, options={}){const response=await fetch(url,{cache:"no-store",...options});const data=await response.json();if(!response.ok)throw new Error(data.error||"処理に失敗しました。");return data}
 
+function formatBytes(value){if(!value)return "不明";const units=["B","KB","MB","GB","TB"];let size=Number(value),i=0;while(size>=1024&&i<units.length-1){size/=1024;i++}return `${size.toFixed(i>1?1:0)} ${units[i]}`}
+function llmButton(label,action,data){return `<button type="button" class="secondary" data-llm-action="${action}" ${Object.entries(data).map(([key,value])=>`data-${key}="${encodeURIComponent(value)}"`).join(" ")}>${label}</button>`}
+function renderLlmCandidates(data){
+  const rows=[];
+  const ollama=data.ollama||{};
+  const localFolder=(data.llm_folder||"").toLocaleLowerCase();
+  (ollama.models||[]).forEach(item=>rows.push(`<article class="llm-candidate"><div><strong>Ollama：${escapeHtml(item.name)}</strong><small>${formatBytes(item.size)}・既存モデル</small></div><div>${llmButton("そのまま使う","select-ollama",{model:item.name})}${llmButton("llmフォルダーへコピーして使う","copy-ollama",{model:item.name})}</div></article>`));
+  (data.gguf||[]).forEach(item=>{const isLocal=item.path.toLocaleLowerCase().startsWith(localFolder+"\\");rows.push(`<article class="llm-candidate ${item.valid?"":"invalid"}"><div><strong>${escapeHtml(item.name)}</strong><small>${formatBytes(item.size)}・${escapeHtml(item.reason)}<br>${escapeHtml(item.path)}</small></div><div>${item.valid?llmButton(isLocal?"このGGUFを使う":"llmフォルダーへコピーして使う","select-gguf",{path:item.path}):""}</div></article>`)});
+  $("llmCandidates").innerHTML=rows.length?rows.join(""):`<p>利用可能なLLMは見つかりませんでした。<br><code>${escapeHtml(data.llm_folder||"llm")}</code> へGGUFを入れて再検索してください。</p>`;
+}
+async function discoverLlm(deep=false){
+  const button=deep?$("deepScanLlm"):$("scanLlm");button.disabled=true;$("llmSearchMessage").textContent=deep?"全ドライブを検索しています。時間がかかる場合があります…":"LLMを探しています…";
+  try{const data=await api(`/api/llm/discover?deep=${deep?1:0}`);renderLlmCandidates(data);$("llmSearchMessage").textContent=`Ollama ${data.ollama?.models?.length||0}件、GGUF ${data.gguf?.length||0}件を確認しました。`}
+  catch(error){$("llmSearchMessage").textContent=error.message}finally{button.disabled=false}
+}
+
+let llmDiscovered=false;
 document.querySelectorAll(".tabs button").forEach(button=>button.addEventListener("click",()=>{
   document.querySelectorAll(".tabs button,.tab").forEach(item=>item.classList.remove("active"));
   button.classList.add("active");$("tab-"+button.dataset.tab).classList.add("active");
+  if(button.dataset.tab==="chat"&&!llmDiscovered){llmDiscovered=true;discoverLlm(false)}
 }));
 
 async function refreshStatus(){
@@ -80,16 +100,43 @@ function renderPlan(chunks){
   $("plan").innerHTML=chunks.length?chunks.map((item,index)=>`<div class="chunk"><small>${index+1}・${item.length}文字・${escapeHtml(item.reason)}${item.speaker?`・${escapeHtml(item.speaker)}`:""}</small>${escapeHtml(item.text)}</div>`).join(""):"読み上げ対象がありません。";
 }
 
+function showGeneratedResult(item){
+  $("emptyResult").classList.add("hidden");$("result").classList.remove("hidden");
+  $("metricTime").textContent=`${item.seconds} 秒`;$("metricChunks").textContent=item.chunks||item.total;
+  $("metricVoices").textContent=item.voices?.length?item.voices.join("、"):"Irodori内部音声";
+  $("player").src=item.url;$("download").href=item.url;$("download").download=item.filename;
+}
+function renderLongJob(job){
+  if(!job)return;
+  activeLongJobId=job.id;$("longJob").classList.remove("hidden");$("emptyResult").classList.add("hidden");
+  const labels={queued:"待機中",running:"長文生成中",cancelling:"停止待ち",cancelled:"停止済み",failed:"一時停止",interrupted:"中断",completed:"完了"};
+  $("longJobStatus").textContent=labels[job.status]||job.status;$("longJobPercent").textContent=`${job.progress||0}%`;$("longJobProgress").value=job.progress||0;
+  $("longJobMessage").textContent=job.error?`${job.message} ${job.error}`:job.message;
+  $("longJobCurrent").textContent=job.total?`${job.current}/${job.total} チャンク${job.current_text?`・現在: ${job.current_text}`:""}`:"";
+  $("cancelLongJob").classList.toggle("hidden",!job.can_cancel);$("resumeLongJob").classList.toggle("hidden",!job.can_resume);
+  $("generateButton").disabled=job.can_cancel;$("generateButton").textContent=job.can_cancel?"長文を生成中…":"音声を生成";
+  if(job.status==="completed"){showGeneratedResult(job);refreshHistory()}
+}
+async function pollLongJob(jobId){
+  clearTimeout(longJobTimer);
+  try{const data=await api(`/api/jobs/${encodeURIComponent(jobId)}`);renderLongJob(data.job);if(data.job.can_cancel)longJobTimer=setTimeout(()=>pollLongJob(jobId),1000)}
+  catch(error){$("longJobMessage").textContent=error.message;longJobTimer=setTimeout(()=>pollLongJob(jobId),3000)}
+}
+async function refreshActiveLongJob(){try{const data=await api("/api/jobs/active");if(data.job){renderLongJob(data.job);if(data.job.can_cancel)pollLongJob(data.job.id)}}catch(error){console.warn(error)}}
+
 $("planButton").addEventListener("click",async()=>{
   $("message").textContent="";
   try{const data=await api("/api/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:$("text").value})});renderPlan(data.chunks)}catch(error){$("message").textContent=error.message}
 });
 
 $("generateForm").addEventListener("submit",async event=>{
-  event.preventDefault();const button=$("generateButton");button.disabled=true;button.textContent="生成しています…";$("message").textContent="";
-  try{await quickVoiceRead;const selected=quickVoice;const payload={text:$("text").value,register_voice:$("quickVoiceRegister").checked};if(selected){payload.voice_name=selected.name;payload.voice_data=selected.data}const item=await api("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});$("emptyResult").classList.add("hidden");$("result").classList.remove("hidden");$("metricTime").textContent=`${item.seconds} 秒`;$("metricChunks").textContent=item.chunks;$("metricVoices").textContent=item.voices?.length?item.voices.join("、"):"Irodori内部音声";$("player").src=item.url;$("download").href=item.url;$("download").download=item.filename;if(selected)$("quickVoiceName").textContent=`${selected.name}（選択中）`;await refreshHistory();if(selected&&$("quickVoiceRegister").checked)await loadSettings()}
-  catch(error){$("message").textContent=error.message}finally{button.disabled=false;button.textContent="音声を生成"}
+  event.preventDefault();const button=$("generateButton");let longStarted=false;clearTimeout(longJobTimer);$("longJob").classList.add("hidden");button.disabled=true;button.textContent="生成しています…";$("message").textContent="";
+  try{await quickVoiceRead;const selected=quickVoice;const payload={text:$("text").value,register_voice:$("quickVoiceRegister").checked};if(selected){payload.voice_name=selected.name;payload.voice_data=selected.data}const item=await api("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(item.long_job){longStarted=true;renderLongJob(item.job);pollLongJob(item.job.id)}else{showGeneratedResult(item);await refreshHistory()}if(selected)$("quickVoiceName").textContent=`${selected.name}（選択中）`;if(selected&&$("quickVoiceRegister").checked)await loadSettings()}
+  catch(error){$("message").textContent=error.message}finally{if(!longStarted){button.disabled=false;button.textContent="音声を生成"}}
 });
+
+$("cancelLongJob").addEventListener("click",async()=>{if(!activeLongJobId)return;try{const data=await api(`/api/jobs/${encodeURIComponent(activeLongJobId)}/cancel`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});renderLongJob(data.job);pollLongJob(activeLongJobId)}catch(error){$("longJobMessage").textContent=error.message}});
+$("resumeLongJob").addEventListener("click",async()=>{if(!activeLongJobId)return;try{const data=await api(`/api/jobs/${encodeURIComponent(activeLongJobId)}/resume`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});renderLongJob(data.job);pollLongJob(activeLongJobId)}catch(error){$("longJobMessage").textContent=error.message}});
 
 async function refreshHistory(){
   const data=await api("/api/history");$("history").innerHTML=data.items.length?data.items.map(item=>`<div class="history-item"><div><strong>${escapeHtml(item.filename)}</strong><p>${escapeHtml(item.text)}</p></div><div><small>${escapeHtml(item.created_at)}・${item.chunks} chunks</small><br><a href="${item.url}" download>WAV</a></div></div>`).join(""):"<p class='muted'>まだ生成履歴はありません。</p>";
@@ -138,5 +185,23 @@ $("resetChat").addEventListener("click",async()=>{
   $("chatMessages").innerHTML='<div class="chat-empty">会話履歴を消去しました。</div>';
 });
 
-Promise.all([loadSettings(),loadCharacters(),refreshStatus(),refreshHistory()]).catch(error=>$("message").textContent=error.message);
+$("scanLlm").addEventListener("click",()=>discoverLlm(false));
+$("deepScanLlm").addEventListener("click",()=>discoverLlm(true));
+$("openLlmFolder").addEventListener("click",async()=>{try{await api("/api/llm/open-folder",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})}catch(error){$("llmSearchMessage").textContent=error.message}});
+$("llmCandidates").addEventListener("click",async event=>{
+  const button=event.target.closest("[data-llm-action]");if(!button)return;
+  button.disabled=true;const action=button.dataset.llmAction;$("llmSearchMessage").textContent=action==="copy-ollama"?"Ollamaモデルをllmフォルダーへコピーしています…":"LLMを設定しています…";
+  try{
+    if(action==="select-ollama")await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"ollama",model:decodeURIComponent(button.dataset.model)})});
+    if(action==="copy-ollama"){
+      const copied=await api("/api/llm/copy-ollama",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:decodeURIComponent(button.dataset.model)})});
+      await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"gguf",path:copied.gguf.path})});
+    }
+    if(action==="select-gguf")await api("/api/llm/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"gguf",path:decodeURIComponent(button.dataset.path)})});
+    await loadSettings();await refreshStatus();$("llmSearchMessage").textContent="LLMを設定しました。返答テストを実行できます。";await discoverLlm(false);
+  }catch(error){$("llmSearchMessage").textContent=error.message}finally{button.disabled=false}
+});
+$("testLlm").addEventListener("click",async()=>{const button=$("testLlm");button.disabled=true;$("llmTestResult").textContent="LLMを起動して返答を生成しています…";try{const result=await api("/api/llm/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:"こんにちは。リリーとして短く自己紹介して。"})});$("llmTestResult").textContent=`成功：${result.reply}`}catch(error){$("llmTestResult").textContent=error.message}finally{button.disabled=false;await refreshStatus()}});
+
+Promise.all([loadSettings(),loadCharacters(),refreshStatus(),refreshHistory(),refreshActiveLongJob()]).catch(error=>$("message").textContent=error.message);
 setInterval(refreshStatus,10000);

@@ -1,0 +1,7 @@
+.long-job{display:grid;gap:10px;margin-bottom:16px;padding:14px;border:1px solid #f4b94255;border-radius:12px;background:#f4b9420b}
+.long-job-heading{display:flex;justify-content:space-between;gap:12px}
+.long-job progress{width:100%;accent-color:var(--accent)}
+.long-job p,.long-job small{margin:0;overflow-wrap:anywhere}
+.long-job p{color:var(--muted);line-height:1.5}
+.long-job-actions{display:flex;gap:8px}
+.long-job-actions button{flex:1;min-height:38px}
