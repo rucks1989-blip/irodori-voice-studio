@@ -92,40 +92,6 @@ function Save-Json($Path, $Value) {
     Move-Item -Force -Path $temp -Destination $Path
 }
 
-function Test-DownloadPartial($Item, [string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    $file = Get-Item -LiteralPath $Path
-    $expectedSize = if ($null -ne $Item.Size) { [int64]$Item.Size } else { 0 }
-    if ($file.Length -le 0 -or ($expectedSize -gt 0 -and $file.Length -gt $expectedSize)) { return $false }
-
-    $required = 0
-    $expectedMagic = $null
-    if ($Item.Name -match "(?i)\.gguf$") {
-        $required = 4
-        $expectedMagic = [byte[]](0x47, 0x47, 0x55, 0x46)
-    } elseif ($Item.Name -match "(?i)\.zip$") {
-        $required = 2
-        $expectedMagic = [byte[]](0x50, 0x4b)
-    }
-    if ($required -eq 0) { return $true }
-    if ($file.Length -lt $required) { return $false }
-
-    $stream = $null
-    try {
-        $stream = [System.IO.File]::OpenRead($Path)
-        $header = New-Object byte[] $required
-        if ($stream.Read($header, 0, $required) -ne $required) { return $false }
-        for ($i = 0; $i -lt $required; $i++) {
-            if ($header[$i] -ne $expectedMagic[$i]) { return $false }
-        }
-        return $true
-    } catch {
-        return $false
-    } finally {
-        if ($null -ne $stream) { $stream.Dispose() }
-    }
-}
-
 function Download-Verified($Item, $Destination) {
     if (Test-Path $Destination) {
         $existing = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToLowerInvariant()
@@ -134,65 +100,23 @@ function Download-Verified($Item, $Destination) {
             return
         }
     }
-
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
     $partial = "$Destination.partial"
-    if (Test-Path -LiteralPath $partial) {
-        if (-not (Test-DownloadPartial $Item $partial)) {
-            Write-Host "不正な途中ファイルを削除して最初から取得します: $($Item.Name)"
-            Remove-Item -Force -LiteralPath $partial
-        } elseif ($null -ne $Item.Size -and (Get-Item -LiteralPath $partial).Length -eq [int64]$Item.Size) {
-            $partialHash = (Get-FileHash -Algorithm SHA256 -Path $partial).Hash.ToLowerInvariant()
-            if ($partialHash -eq $Item.Sha256) {
-                Move-Item -Force -LiteralPath $partial -Destination $Destination
-                Write-Host "完了済みの途中ファイルを確認して再利用します: $($Item.Name)"
-                return
-            }
-            Write-Host "検査に失敗した途中ファイルを削除します: $($Item.Name)"
-            Remove-Item -Force -LiteralPath $partial
-        }
-    }
-
     Write-Host "ダウンロード中: $($Item.Name)"
     Write-Host "配布元: $($Item.Url)"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        $curlHelp = (& $curl.Source --help all 2>$null) -join "`n"
-        $curlArgs = @("--location", "--fail", "--retry", "5", "--retry-delay", "2")
-        if ($curlHelp -match "--retry-all-errors") { $curlArgs += "--retry-all-errors" }
-        $curlArgs += @("--continue-at", "-", "--output", $partial, $Item.Url)
-
-        & $curl.Source @curlArgs
-        $curlExitCode = $LASTEXITCODE
-
-        if ($curlExitCode -eq 35 -and $curlHelp -match "--ssl-revoke-best-effort") {
-            if ((Test-Path -LiteralPath $partial) -and -not (Test-DownloadPartial $Item $partial)) {
-                Remove-Item -Force -LiteralPath $partial
-            }
-            Write-Host "Windowsが証明書の失効情報を取得できませんでした。失効情報がオフラインの場合だけ許容して再試行します。"
-            & $curl.Source --ssl-revoke-best-effort @curlArgs
-            $curlExitCode = $LASTEXITCODE
-        }
-        if ($curlExitCode -ne 0) {
-            throw "$($Item.Name)のダウンロードに失敗しました。download_links.htmlから手動で取得することもできます。"
-        }
+        & $curl.Source --location --fail --retry 5 --retry-delay 2 --continue-at - --output $partial $Item.Url
+        if ($LASTEXITCODE -ne 0) { throw "$($Item.Name)のダウンロードに失敗しました。" }
     } else {
         Invoke-WebRequest -Uri $Item.Url -OutFile $partial -UseBasicParsing
     }
-
-    if ($null -ne $Item.Size) {
-        $actualSize = (Get-Item -LiteralPath $partial).Length
-        if ($actualSize -ne [int64]$Item.Size) {
-            Remove-Item -Force -LiteralPath $partial -ErrorAction SilentlyContinue
-            throw "$($Item.Name)のファイルサイズ検査に失敗しました。"
-        }
-    }
     $actual = (Get-FileHash -Algorithm SHA256 -Path $partial).Hash.ToLowerInvariant()
     if ($actual -ne $Item.Sha256) {
-        Remove-Item -Force -LiteralPath $partial -ErrorAction SilentlyContinue
+        Remove-Item -Force $partial -ErrorAction SilentlyContinue
         throw "$($Item.Name)の改ざん検査（SHA-256）に失敗しました。"
     }
-    Move-Item -Force -LiteralPath $partial -Destination $Destination
+    Move-Item -Force $partial $Destination
 }
 
 function Ensure-Python {
@@ -560,4 +484,5 @@ $state = [ordered]@{
 Save-Json $StatePath $state
 Write-SetupResult $backend
 Write-Host "セットアップが完了しました。次回からstart.batを使用してください。"
+
 
