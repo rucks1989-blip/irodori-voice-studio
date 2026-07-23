@@ -166,7 +166,7 @@ function Download-Verified($Item, $Destination) {
         $curlExitCode = $LASTEXITCODE
 
         if ($curlExitCode -eq 35 -and $curlHelp -match "--ssl-revoke-best-effort") {
-            if (Test-Path -LiteralPath $partial -and -not (Test-DownloadPartial $Item $partial)) {
+            if ((Test-Path -LiteralPath $partial) -and -not (Test-DownloadPartial $Item $partial)) {
                 Remove-Item -Force -LiteralPath $partial
             }
             Write-Host "Windowsが証明書の失効情報を取得できませんでした。失効情報がオフラインの場合だけ許容して再試行します。"
