@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,22 @@ LOCK = threading.Lock()
 CHAT_LOCK = threading.Lock()
 CHAT_HISTORY = {}
 JOB_MANAGER = None
+APP_RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+APP_LOG_PATH = ROOT / "logs" / "runs" / f"studio-app_{APP_RUN_ID}_{os.getpid()}.log"
+
+
+def log_app_event(event, **values):
+    record = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "event": event,
+        **values,
+    }
+    try:
+        APP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with APP_LOG_PATH.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
 
 
 def read_json(path, fallback):
@@ -44,6 +61,20 @@ def settings():
     base["ui_port"] = 6670
     base["api_port"] = 6666
     return base
+
+
+def rotate_startup_logs(config):
+    days = max(7, int(config.get("log_retention_days", 90)))
+    cutoff = time.time() - days * 86400
+    runs = ROOT / "logs" / "runs"
+    if not runs.is_dir():
+        return
+    for path in runs.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError as exc:
+            log_app_event("log_rotation_error", path=str(path), error=str(exc))
 
 
 def public_settings(value):
@@ -125,6 +156,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         print(f"[studio] {self.address_string()} {fmt % args}", flush=True)
+        log_app_event("http_access", client=self.address_string(), message=fmt % args)
 
     def send_json(self, status, value):
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -199,6 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.static_file(path)
         except Exception as exc:
+            log_app_event("http_exception", method="GET", path=self.path, error_type=type(exc).__name__, error=str(exc), traceback=traceback.format_exc())
             self.send_json(500, {"error": str(exc)})
 
     def do_POST(self):
@@ -386,8 +419,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(404, {"error": "not_found"})
         except (ValueError, json.JSONDecodeError) as exc:
+            log_app_event("http_client_error", method="POST", path=self.path, error_type=type(exc).__name__, error=str(exc))
             self.send_json(400, {"error": str(exc)})
         except Exception as exc:
+            log_app_event("http_exception", method="POST", path=self.path, error_type=type(exc).__name__, error=str(exc), traceback=traceback.format_exc())
             self.send_json(500, {"error": str(exc)})
 
 
@@ -395,12 +430,15 @@ def maybe_start_backend(config):
     ready, _ = backend_status(config)
     command = str(config.get("backend_start_command") or "").strip()
     if not ready and command:
-        subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", command], cwd=ROOT)
+        process = subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", command], cwd=ROOT)
+        log_app_event("backend_start_requested", pid=process.pid, command=command)
 
 
 def main():
     global JOB_MANAGER
     config = settings()
+    rotate_startup_logs(config)
+    log_app_event("studio_start", pid=os.getpid(), ports=[6666, 6670])
     maybe_start_backend(config)
     JOB_MANAGER = LongJobManager(ROOT, LOCK, add_history, maybe_start_backend)
     api_server = ThreadingHTTPServer(("127.0.0.1", 6666), Handler)

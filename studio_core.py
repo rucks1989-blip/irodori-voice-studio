@@ -1,15 +1,106 @@
 import base64
 import difflib
 import hashlib
+import json
 import os
 import re
 import shutil
 import tempfile
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import requests
 import soundfile as sf
+
+
+LOG_PATH = Path(__file__).resolve().parent / "logs" / "tts-requests.jsonl"
+BACKEND_PID_PATH = Path(__file__).resolve().parent / "logs" / "audio-cpp.pid"
+
+
+def _log_tts_event(event, **values):
+    record = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event, **values}
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+def _backend_pid():
+    try:
+        return int(BACKEND_PID_PATH.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _voice_metadata(path):
+    if not path:
+        return {"voice_ref_exists": False}
+    try:
+        stat = Path(path).stat()
+        info = {"voice_ref_exists": True, "voice_ref_bytes": stat.st_size, "voice_ref_mtime_ns": stat.st_mtime_ns}
+        try:
+            wav_info = sf.info(str(path))
+            info.update({"voice_ref_samplerate": wav_info.samplerate, "voice_ref_channels": wav_info.channels, "voice_ref_frames": wav_info.frames, "voice_ref_subtype": wav_info.subtype})
+        except Exception as exc:
+            info["voice_ref_decode_error"] = f"{type(exc).__name__}: {exc}"
+        return info
+    except OSError as exc:
+        return {"voice_ref_exists": False, "voice_ref_stat_error": f"{type(exc).__name__}: {exc}"}
+
+
+def validate_voice_reference(value, required=False):
+    raw = str(value or "").strip()
+    if not raw:
+        if required:
+            raise ValueError("参照WAVが必要ですが、パスが指定されていません。")
+        return {
+            "voice_ref_requested": False,
+            "voice_ref_exists": False,
+            "voice_ref_path": "",
+            "voice_ref_sha256": None,
+        }
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise ValueError(f"参照WAVが見つかりません: {path}")
+    if not path.is_file():
+        raise ValueError(f"参照WAVが通常ファイルではありません: {path}")
+    try:
+        stat = path.stat()
+        if stat.st_size <= 44:
+            raise ValueError(f"参照WAVのサイズが不正です: {path}")
+        with path.open("rb") as handle:
+            header = handle.read(12)
+            if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                raise ValueError(f"参照WAVのRIFF/WAVEヘッダーが不正です: {path}")
+            digest = hashlib.sha256()
+            digest.update(header)
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        info = sf.info(str(path))
+        if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
+            raise ValueError(f"参照WAVに有効な音声フレームがありません: {path}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"参照WAVを読み取れません: {path}: {exc}") from exc
+    return {
+        "voice_ref_requested": True,
+        "voice_ref_exists": True,
+        "voice_ref_path": str(path.resolve()),
+        "voice_ref_sha256": digest.hexdigest(),
+        "voice_ref_size": stat.st_size,
+        "voice_ref_mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "voice_ref_sample_rate": info.samplerate,
+        "voice_ref_channels": info.channels,
+        "voice_ref_frames": info.frames,
+        "voice_ref_duration_sec": round(info.duration, 6),
+        "voice_ref_subtype": info.subtype,
+    }
 
 
 def normalize_markers(text):
@@ -46,7 +137,14 @@ def _find_voice(name, settings, root):
     voice_dir = root / "data" / "voice_refs"
     default = str(settings.get("default_voice") or "")
     default_path = (root / default).resolve() if default and not Path(default).is_absolute() else Path(default)
-    default_result = (str(default_path) if default and default_path.is_file() else "", "default", 0.0)
+    if default:
+        default_result = (
+            (str(default_path.resolve()), "default", 0.0)
+            if default_path.is_file()
+            else ("", "default_missing", 0.0)
+        )
+    else:
+        default_result = ("", "none", 0.0)
     aliases = settings.get("speaker_aliases") or {}
     explicit = str(aliases.get(name) or "") if isinstance(aliases, dict) else ""
     if explicit:
@@ -55,6 +153,7 @@ def _find_voice(name, settings, root):
             explicit_path = root / explicit_path
         if explicit_path.is_file():
             return str(explicit_path.resolve()), "explicit", 1.0
+        return "", "explicit_missing", 1.0
     files = sorted(voice_dir.glob("*.wav")) if voice_dir.is_dir() else []
     wanted = _key(name)
     if not wanted:
@@ -82,6 +181,7 @@ def _find_voice(name, settings, root):
 
 def build_plan(text, settings, root):
     root = Path(root).resolve()
+    default_voice, default_kind, default_score = _find_voice("", settings, root)
     pattern = str(settings.get("speaker_tag_pattern") or "【{name}】")
     markers = settings.get("speaker_markers") or {}
     marker_text = "".join(str(value) for value in markers) if isinstance(markers, dict) else ""
@@ -93,7 +193,7 @@ def build_plan(text, settings, root):
     backtrack = max(0, min(target - 1, int(settings.get("backtrack_chars", 50))))
     if "{name}" not in pattern and "佐藤" in pattern:
         pattern = pattern.replace("佐藤", "{name}", 1)
-    segments = [(source, "", "", 0.0)]
+    segments = [(source, "", default_kind, default_score, default_voice)]
     enabled = settings.get("reader_extraction_enabled", True) and settings.get("speaker_switch_enabled", True)
     if enabled:
         occurrences = []
@@ -111,7 +211,7 @@ def build_plan(text, settings, root):
                     if not voice_path.is_absolute():
                         voice_path = root / voice_path
                     voice = str(voice_path.resolve()) if voice_path.is_file() else ""
-                    kind, score = "explicit", 1.0
+                    kind, score = ("explicit", 1.0) if voice else ("explicit_missing", 1.0)
                 else:
                     voice, kind, score = _find_voice(name, settings, root)
                 occurrences.append((match.start(), match.end(), name, voice, kind, score, True))
@@ -134,13 +234,14 @@ def build_plan(text, settings, root):
                     if not inside_pattern:
                         display_name = voice_path.stem if voice_value else marker
                         voice = str(voice_path.resolve()) if voice_path.is_file() else ""
-                        occurrences.append((position, marker_end, display_name, voice, "explicit", 1.0, False))
+                        kind = "explicit" if voice else ("explicit_missing" if voice_value else "none")
+                        occurrences.append((position, marker_end, display_name, voice, kind, 1.0, False))
                     start = marker_end
         occurrences.sort(key=lambda item: (item[0], -item[1], not item[6]))
         if occurrences:
             segments = []
             if occurrences[0][0] > 0:
-                segments.append((source[:occurrences[0][0]], "", "default", 0.0))
+                segments.append((source[:occurrences[0][0]], "", default_kind, default_score, default_voice))
             for index, (position, marker_end, display_name, voice, kind, score, _) in enumerate(occurrences):
                 body_start = marker_end
                 body_end = occurrences[index + 1][0] if index + 1 < len(occurrences) else len(source)
@@ -158,13 +259,20 @@ def build_plan(text, settings, root):
             remaining = remaining[cut:].strip()
         if remaining:
             plan.append(_plan_item(remaining, "end", speaker, voice, kind, score, settings))
-    fallback_voice = _find_voice("", settings, root)[0]
+    fallback_voice = default_voice
     if fallback_voice:
         for item in plan:
             if not item.get("voice_ref"):
                 item["voice_ref"] = fallback_voice
                 item["speaker_match"] = "default"
                 item["speaker_score"] = 0.0
+    _log_tts_event(
+        "plan_voice_resolution",
+        fallback_available=bool(fallback_voice),
+        fallback_voice=fallback_voice,
+        plan_chunks=len(plan),
+        voice_chunks=sum(1 for item in plan if item.get("voice_ref")),
+    )
     if plan:
         plan[-1]["silence_after_ms"] = 0
     return plan
@@ -177,7 +285,17 @@ def _plan_item(text, reason, speaker, voice, kind, score, settings):
         silence = int(settings.get("silence_dialogue_ms", 220))
     else:
         silence = int(settings.get("silence_hard_ms", 100))
-    return {"text": text, "length": len(text), "reason": reason, "speaker": speaker, "voice_ref": voice, "speaker_match": kind, "speaker_score": score, "silence_after_ms": silence}
+    return {
+        "text": text,
+        "length": len(text),
+        "reason": reason,
+        "speaker": speaker,
+        "voice_ref": voice,
+        "voice_ref_required": bool(voice) or kind in {"default_missing", "explicit_missing"},
+        "speaker_match": kind,
+        "speaker_score": score,
+        "silence_after_ms": silence,
+    }
 
 
 def _ascii_voice_path(value):
@@ -190,15 +308,21 @@ def _ascii_voice_path(value):
     except UnicodeEncodeError:
         stat = path.stat()
         key = hashlib.sha1(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:16]
-        cache = Path(tempfile.gettempdir()) / "irodori_voice_studio_refs"
-        cache.mkdir(exist_ok=True)
+        cache = Path(__file__).resolve().parent / "data" / "reference_cache_ascii"
+        cache.mkdir(parents=True, exist_ok=True)
         target = cache / f"voice_{key}.wav"
         if not target.exists():
             shutil.copy2(path, target)
         return target
 
 
-def synthesize_chunk(text, voice_ref, settings):
+def synthesize_chunk(text, voice_ref, settings, diagnostic_context=None):
+    request_started = time.perf_counter()
+    sent_voice_ref = ""
+    diagnostic = diagnostic_context if isinstance(diagnostic_context, dict) else {}
+    request_id = str(diagnostic.get("request_id") or uuid.uuid4())
+    request_mode = str(diagnostic.get("request_mode") or ("clone" if voice_ref else "tts"))
+    voice_info = validate_voice_reference(voice_ref, required=request_mode == "clone")
     payload = {
         "model": settings.get("model", "irodori-500m-v3-q8"),
         "input": text,
@@ -209,13 +333,95 @@ def synthesize_chunk(text, voice_ref, settings):
         "options": {"no_ref": not bool(voice_ref), "text_chunk_size": str(settings.get("target_chars", 120)), "text_chunk_mode": "japanese"},
     }
     if voice_ref:
-        payload["voice_ref"] = str(_ascii_voice_path(voice_ref))
-    response = requests.post(settings["audio_cpp_url"], json=payload, timeout=600)
-    if not response.ok:
-        raise RuntimeError(f"audio.cpp error {response.status_code}: {response.text[:300]}")
-    if len(response.content) < 44 or response.content[:4] != b"RIFF":
-        raise RuntimeError("audio.cppから正常なWAVが返りませんでした。")
-    return response.content
+        sent_voice_ref = str(_ascii_voice_path(voice_ref))
+        sent_voice_info = validate_voice_reference(sent_voice_ref, required=True)
+        if sent_voice_info["voice_ref_sha256"] != voice_info["voice_ref_sha256"]:
+            raise RuntimeError("送信直前の参照WAVハッシュが元ファイルと一致しません。")
+        payload["voice_ref"] = sent_voice_ref
+    else:
+        sent_voice_info = voice_info
+    request_context = dict(diagnostic)
+    request_context.update({
+        "request_id": request_id,
+        "request_mode": request_mode,
+        "backend_pid": _backend_pid(),
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "text_utf8_bytes": len(text.encode("utf-8")),
+        "text_codepoints": len(text),
+        "request_json_bytes": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+        **voice_info,
+    })
+    diagnostic.update({
+        "request_id": request_id,
+        "request_mode": request_mode,
+        "request": {
+            "model": payload["model"],
+            "language": payload["language"],
+            "text": text,
+            "seed": payload["seed"],
+            "num_inference_steps": payload["num_inference_steps"],
+            "voice_ref_sent": bool(sent_voice_ref),
+            "voice_ref_path": sent_voice_ref,
+            "voice_ref_sha256": sent_voice_info.get("voice_ref_sha256"),
+            "no_ref": payload["options"]["no_ref"],
+        },
+        "voice_reference": voice_info,
+        "request_started_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+    })
+    _log_tts_event(
+        "request_start",
+        endpoint=settings.get("audio_cpp_url", ""),
+        model=payload["model"],
+        text=text,
+        text_length=len(text),
+        voice_ref_input=str(voice_ref or ""),
+        voice_ref_sent=sent_voice_ref,
+        no_ref=payload["options"]["no_ref"],
+        seed=payload["seed"],
+        num_inference_steps=payload["num_inference_steps"],
+        text_chunk_size=payload["options"]["text_chunk_size"],
+        **request_context,
+    )
+    try:
+        response = requests.post(settings["audio_cpp_url"], json=payload, timeout=600)
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000, 1)
+        valid_wav = len(response.content) >= 44 and response.content[:4] == b"RIFF"
+        _log_tts_event(
+            "request_result",
+            status=response.status_code,
+            response_bytes=len(response.content),
+            valid_wav=valid_wav,
+            elapsed_ms=elapsed_ms,
+            voice_ref_sent=sent_voice_ref,
+            **request_context,
+        )
+        diagnostic.update({
+            "request_finished_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "http_status": response.status_code,
+            "response_bytes": len(response.content),
+            "valid_wav": valid_wav,
+            "elapsed_ms": elapsed_ms,
+        })
+        if not response.ok:
+            raise RuntimeError(f"audio.cpp error {response.status_code}: {response.text[:300]}")
+        if not valid_wav:
+            raise RuntimeError("audio.cppから正常なWAVが返りませんでした。")
+        return response.content
+    except Exception as exc:
+        diagnostic.update({
+            "request_finished_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        })
+        _log_tts_event(
+            "request_error",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            elapsed_ms=round((time.perf_counter() - request_started) * 1000, 1),
+            voice_ref_sent=sent_voice_ref,
+            **request_context,
+        )
+        raise
 
 
 def combine_wavs(paths, gaps, fade_ms=5):

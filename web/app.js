@@ -1,9 +1,18 @@
 const $ = id => document.getElementById(id);
+const savedTheme=localStorage.getItem("irodori-theme");
+const initialTheme=savedTheme||((window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark");
+document.documentElement.dataset.theme=initialTheme;
+function updateThemeButton(){
+  const light=document.documentElement.dataset.theme==="light";
+  $("themeToggle").textContent=light?"☾":"☀";
+  $("themeToggle").title=light?"ダークモードへ切り替える":"ライトモードへ切り替える";
+}
+document.addEventListener("DOMContentLoaded",updateThemeButton);
 const llmSettingsPanel=document.createElement("div");
 llmSettingsPanel.className="llm-settings-inline";
 llmSettingsPanel.innerHTML=`<h3>LLMをかんたん設定</h3><p class="hint">GGUFを <code>llm</code> フォルダーへ入れるか、既存のOllamaモデルを選ぶだけで使えます。</p><div class="llm-actions"><button id="scanLlm" class="primary" type="button">自動で探す</button><button id="openLlmFolder" class="secondary" type="button">llmフォルダーを開く</button><button id="deepScanLlm" class="secondary" type="button">全ドライブを詳しく探す</button></div><p id="llmSearchMessage" class="message"></p><div id="llmCandidates" class="llm-candidates muted">「自動で探す」を押してください。</div><div class="llm-test"><button id="testLlm" class="secondary" type="button">選択中のLLMで返答テスト</button><p id="llmTestResult" class="message"></p></div><details class="llm-advanced"><summary>詳細な接続設定</summary><label>OpenAI互換Chat API<input id="llm_endpoint"></label><label>ヘルスチェックURL<input id="llm_health_url"></label><label>モデル名<input id="llm_model"></label><div class="form-grid"><label>Temperature<input id="llm_temperature" type="number" min="0" max="2" step="0.05"></label><label>最大トークン<input id="llm_max_tokens" type="number" min="1" max="4096"></label></div><button class="save primary" type="button">詳細設定を保存</button></details>`;
 document.querySelector(".llm-example").appendChild(llmSettingsPanel);
-const fields = ["audio_cpp_url","audio_cpp_health_url","model","num_steps","seed","target_chars","backtrack_chars","silence_sentence_ms","silence_dialogue_ms","silence_hard_ms","fade_ms","default_voice","llm_endpoint","llm_health_url","llm_model","llm_temperature","llm_max_tokens"];
+const fields = ["audio_cpp_url","audio_cpp_health_url","model","num_steps","seed","target_chars","backtrack_chars","silence_sentence_ms","silence_dialogue_ms","silence_hard_ms","fade_ms","chunk_wav_retention","log_retention_days","max_diagnostic_jobs","default_voice","llm_endpoint","llm_health_url","llm_model","llm_temperature","llm_max_tokens"];
 const checks = ["reader_extraction_enabled","speaker_switch_enabled"];
 let currentSettings = {};
 let speakerAliases = {};
@@ -62,9 +71,16 @@ async function loadSettings(){
 }
 
 function collectSettings(){
-  const value={};fields.forEach(id=>{if(!$(id))return;value[id]=["num_steps","seed","target_chars","backtrack_chars","silence_sentence_ms","silence_dialogue_ms","silence_hard_ms","fade_ms"].includes(id)?Number($(id).value):$(id).value});
+  const value={};fields.forEach(id=>{if(!$(id))return;value[id]=["num_steps","seed","target_chars","backtrack_chars","silence_sentence_ms","silence_dialogue_ms","silence_hard_ms","fade_ms","log_retention_days","max_diagnostic_jobs"].includes(id)?Number($(id).value):$(id).value});
   checks.forEach(id=>value[id]=$(id).checked);value.ignored_texts=$("ignored_texts").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);value.speaker_markers={...speakerAliases};return value;
 }
+
+$("themeToggle").addEventListener("click",()=>{
+  const next=document.documentElement.dataset.theme==="light"?"dark":"light";
+  document.documentElement.dataset.theme=next;
+  localStorage.setItem("irodori-theme",next);
+  updateThemeButton();
+});
 
 function renderAliases(){
   const entries=Object.entries(speakerAliases);
